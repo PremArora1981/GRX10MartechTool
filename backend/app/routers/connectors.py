@@ -960,6 +960,11 @@ def _run_probe(source_row: dict[str, Any], credential: str | None) -> ProbeResul
     url = source_row.get("url_pattern")
     if not url:
         return ProbeResult("UNREACHABLE", "no url_pattern configured and no connector registered", None)
+    # KNOWN RESIDUAL RISK (accepted): the guard resolves DNS here while httpx
+    # re-resolves at request time, so a rebinding DNS server could race the
+    # check (TOC/TOU). Closing it fully needs an IP-pinned transport. The
+    # endpoint is owner/admin-gated when auth is configured; deployments
+    # without WorkOS must treat the whole admin surface as untrusted-exposed.
     blocked_reason = _probe_url_blocked(url)
     if blocked_reason:
         return ProbeResult("UNREACHABLE", f"probe blocked: {blocked_reason}", None)

@@ -72,6 +72,15 @@ def get_current_user(request: Request) -> CurrentUser:
     * **development** / auth not configured -> anonymous ``owner`` dev user so the
       app is runnable end-to-end before WorkOS is provisioned.
     """
+    # When WorkOS is not configured, degrade to the anonymous owner regardless
+    # of the resolver's presence. This mirrors the frontend (lib/auth.ts returns
+    # a mock owner when WORKOS_* is unset) so an un-onboarded deployment is
+    # demo-usable end-to-end. SECURITY: such a deployment is unauthenticated —
+    # anyone with the URL is 'owner'. Configure WorkOS before real client data.
+    if not settings.auth_configured:
+        logger.debug("auth not configured; using anonymous owner")
+        return _ANON_DEV_USER
+
     resolver = _resolve_auth_service()
     if resolver is not None:
         try:
