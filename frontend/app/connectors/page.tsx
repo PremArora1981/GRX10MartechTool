@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * Connectors admin screen — server component entry point.
  *

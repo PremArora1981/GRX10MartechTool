@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import type { Metadata } from "next";
 import { getCurrentUser, canEditAssumptions } from "@/lib/auth";
 import { api, ApiError } from "@/lib/api";
@@ -80,7 +81,7 @@ export default async function AssumptionsPage() {
         companies={companies}
         sources={sources}
         canEdit={canEditAssumptions(user?.role ?? undefined)}
-        userRole={user?.role ?? null}
+        userRole={user?.role ?? "external"}
       />
     </main>
   );

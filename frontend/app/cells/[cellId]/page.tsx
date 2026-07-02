@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * Cell Detail page — screen 3 of v1 (v1-definition.md §5).
  *

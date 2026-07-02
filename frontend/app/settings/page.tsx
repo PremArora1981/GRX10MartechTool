@@ -80,7 +80,7 @@ export default async function SettingsPage() {
         initialWebSearch={webSearchEnabled}
         initialAudience={initialAudience}
         canManage={canManage}
-        userRole={user?.role ?? null}
+        userRole={user?.role ?? "external"}
       />
     </div>
   );

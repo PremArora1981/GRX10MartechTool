@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * Cell Explorer — server-component page entry (Next.js 14 App Router RSC).
  *

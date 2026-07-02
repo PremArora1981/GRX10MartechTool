@@ -100,6 +100,7 @@ function CountTooltip({
 }) {
   if (!active || !payload?.length) return null;
   const entry = payload[0];
+  if (!entry) return null;
   return (
     <div className="rounded-lg border border-line bg-surface px-3 py-2 text-xs shadow-raised">
       <div className="font-semibold text-ink">{entry.payload.name}</div>

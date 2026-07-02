@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * Sources View — W2 (client-priority screen).
  *

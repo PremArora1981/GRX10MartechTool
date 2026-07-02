@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * Players screen — Layer 3.
  *
