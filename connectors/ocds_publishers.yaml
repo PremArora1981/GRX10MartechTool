@@ -1,0 +1,117 @@
+# OCDS Publisher seed configuration
+# ---------------------------------------------------------------------------
+# Each entry defines one OCDS-compliant procurement publisher.  One source
+# row is created in the `sources` table per publisher (source_id = entry key).
+# The generic OcdsConnector (connectors/families/ocds.py) handles all of them.
+#
+# Fields per publisher
+# --------------------
+# source_id     : matches sources.source_id (must be unique)
+# name          : human-readable publisher name (sources.publisher)
+# country       : ISO-3166-1 alpha-2 — injected on every normalized row
+# base_url      : request base URL — must match sources.url_pattern for this source_id
+# endpoint      : relative path appended to base_url (the HttpClient uses base_url from
+#                 the source row's url_pattern, so endpoint stays relative)
+# method        : HTTP verb (GET | POST)
+# records_path  : dotted path to the list of OCDS *releases* in the response
+#                 (null if the response IS the releases array)
+# page_param    : query param name that advances the page (null = no pagination)
+# page_size_param : query param name that sets page size (null if fixed)
+# page_size     : records per page to request
+# max_pages     : hard ceiling on pages pulled per run (caps API quota)
+# extra_params  : static query params merged into every request
+#
+# Verification notes
+# ------------------
+# These endpoints are seeded from the OCDS publisher registry as of Jun 2026.
+# Run `probe()` via the Connectors admin UI after deploy to confirm live status;
+# any publisher returning SCHEMA_MISMATCH or UNREACHABLE should be updated
+# to the current endpoint before enabling ingestion.
+# ---------------------------------------------------------------------------
+
+publishers:
+
+  # ---- Paraguay DNCP -------------------------------------------------------
+  # Dirección Nacional de Contrataciones Públicas.
+  # One of the most complete and stable OCDS implementations globally.
+  # Docs: https://www.contrataciones.gov.py/datos/api/v3/doc
+  - source_id: ocds_paraguay
+    name: "Paraguay DNCP"
+    country: PY
+    base_url: "https://datos.contrataciones.gov.py"
+    endpoint: "/datos/api/v3/ocds/release-packages"
+    method: GET
+    records_path: "releases"
+    page_param: "page"
+    page_size_param: "pageSize"
+    page_size: 50
+    max_pages: 40
+    extra_params: {}
+
+  # ---- Colombia CCE (SECOP II) ---------------------------------------------
+  # Colombia Compra Eficiente — national e-procurement portal.
+  # OCDS-format bulk data is published via the open-data portal.
+  # Docs: https://www.colombiacompra.gov.co
+  - source_id: ocds_colombia
+    name: "Colombia CCE (SECOP II)"
+    country: CO
+    base_url: "https://apiocds.colombiacompra.gov.co"
+    endpoint: "/apiOCDS/version/releases"
+    method: GET
+    records_path: null        # response is a releases array directly
+    page_param: "page"
+    page_size_param: "pageSize"
+    page_size: 100
+    max_pages: 30
+    extra_params: {}
+
+  # ---- Moldova eTender ------------------------------------------------------
+  # Moldova e-Procurement platform, Active OCDS publisher since 2020.
+  # Docs: https://public.mtender.gov.md
+  - source_id: ocds_moldova
+    name: "Moldova eTender"
+    country: MD
+    base_url: "https://public.mtender.gov.md"
+    endpoint: "/releases"
+    method: GET
+    records_path: null        # response is a releases array
+    page_param: "page"
+    page_size_param: "limit"
+    page_size: 100
+    max_pages: 30
+    extra_params: {}
+
+  # ---- Georgia SPA ----------------------------------------------------------
+  # State Procurement Agency of Georgia (country).
+  # Publishes OCDS-format tenders via open data API.
+  # Docs: https://procurement.gov.ge
+  - source_id: ocds_georgia
+    name: "Georgia State Procurement Agency"
+    country: GE
+    base_url: "https://odapi.spa.ge"
+    endpoint: "/api/tenders.json"
+    method: GET
+    records_path: null        # response is a releases array
+    page_param: "page"
+    page_size_param: "pageSize"
+    page_size: 100
+    max_pages: 30
+    extra_params: {}
+
+  # ---- UK Contracts Finder --------------------------------------------------
+  # Crown Commercial Service / Cabinet Office, UK Government.
+  # The OCDS filter endpoint accepts date-range and CPV-code query params.
+  # Docs: https://www.contractsfinder.service.gov.uk/apidocumentation
+  - source_id: ocds_uk_cfs
+    name: "UK Contracts Finder Service"
+    country: GB
+    base_url: "https://www.contractsfinder.service.gov.uk"
+    endpoint: "/Published/Notices/OCDS/Filter"
+    method: GET
+    records_path: "releases"
+    page_param: "page"
+    page_size_param: null     # page size is fixed (100) on this endpoint
+    page_size: 100
+    max_pages: 30
+    extra_params:
+      NoticePeriod: "last7days"

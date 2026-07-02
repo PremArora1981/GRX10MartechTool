@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================================================
+ * GRX10 Automated Market Research Tool — global design tokens.
+ * Light theme is the default; a .dark class flips the surface/ink variables.
+ * Domain palettes (confidence/health/segment) live in tailwind.config.ts.
+ * ======================================================================== */
+
+:root {
+  /* GRX10 brand typography: Open Sans body, Montserrat headings. */
+  --font-sans: "Open Sans", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-heading: "Montserrat", var(--font-sans);
+  --font-mono: "Consolas", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --surface: #ffffff;
+  --surface-subtle: #faf7fa; /* warm off-white — app background */
+  --surface-raised: #ffffff;
+  --surface-inverse: #1a0a2e; /* GRX10 dark navy — left nav */
+
+  --ink: #1f1430; /* near-navy body ink */
+  --ink-muted: #574a66; /* muted plum-grey */
+  --ink-subtle: #9c8fab; /* subtle plum-grey */
+  --ink-inverse: #ece5f2; /* text on the dark navy nav */
+
+  --line: #ece4ec; /* hairline borders, warm */
+}
+
+.dark {
+  --surface: #0f172a;
+  --surface-subtle: #020617;
+  --surface-raised: #1e293b;
+  --surface-inverse: #020617;
+
+  --ink: #f1f5f9;
+  --ink-muted: #cbd5e1;
+  --ink-subtle: #64748b;
+  --ink-inverse: #e2e8f0;
+
+  --line: #1e293b;
+}
+
+@layer base {
+  html,
+  body {
+    @apply h-full;
+  }
+  body {
+    @apply bg-surface-subtle text-ink antialiased;
+    font-family: var(--font-sans);
+  }
+  /* GRX10 headings: Montserrat across all heading levels. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+  }
+  /* Tabular figures for every number rendered in the app (TAM, shares, etc.). */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Reusable card surface used by screens and the dashboard. */
+  .card {
+    @apply rounded-card border border-line bg-surface-raised shadow-card;
+  }
+  /* Small uppercase section eyebrow. */
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-wider text-ink-subtle;
+  }
+  /* Generic pill/badge base — domain badges extend this. */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  /* Focus ring consistent across interactive elements. */
+  .focusable {
+    @apply outline-none ring-brand focus-visible:ring-2 focus-visible:ring-offset-1;
+  }
+}

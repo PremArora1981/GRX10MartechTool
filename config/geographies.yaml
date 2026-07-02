@@ -1,0 +1,13 @@
+# Medtech-APAC demo geographies. segment DOMESTIC = the served national market.
+# Three APAC-3 countries from the Jabil MedTech report (main.2 / main.4).
+version: 1
+geographies:
+  - geography_id: 1
+    country: China
+    segment: DOMESTIC
+  - geography_id: 2
+    country: Malaysia
+    segment: DOMESTIC
+  - geography_id: 3
+    country: Singapore
+    segment: DOMESTIC

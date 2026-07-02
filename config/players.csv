@@ -1,0 +1,11 @@
+company_id,name,company_type,country_hq,seeded_role
+1,Mindray,producer,China,patient_monitoring_ivd_imaging
+2,United Imaging Healthcare,producer,China,medical_imaging
+3,Micro-Tech Nanjing,producer,China,gi_endoscopy
+4,Lepu Medical,producer,China,cardiovascular_ivd
+5,MGI Tech,producer,China,molecular_diagnostics
+6,MicroPort,producer,China,cardiovascular_orthopedics
+7,Peijia Medical,producer,China,structural_heart
+8,Venus Medtech,producer,China,structural_heart
+9,Terumo,producer,Japan,catheters_interventional
+10,Nipro,producer,Japan,dialysis_consumables

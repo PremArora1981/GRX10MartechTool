@@ -1,0 +1,35 @@
+# GRX10 Automated Market Research Tool — Python dependencies (superset).
+# Pinned to compatible floors; Render installs the latest matching release.
+# Owned by backend-foundation; other agents NOTE additions rather than editing.
+
+# --- Web framework / server ---
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.30,<0.35
+python-multipart>=0.0.9          # multipart form parsing (credential entry uploads)
+
+# --- Data / ORM (SQLAlchemy 2.0 sync + psycopg3) ---
+SQLAlchemy>=2.0,<2.1
+psycopg[binary]>=3.2,<4          # psycopg3 driver (postgresql+psycopg://)
+
+# --- Validation / settings ---
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+
+# --- HTTP client (connectors, Slack notify, web-search fallback) ---
+httpx>=0.27,<0.29
+tenacity>=8.3,<9                 # retry/backoff for connectors + pipeline
+
+# --- Config / parsing ---
+pyyaml>=6.0,<7                   # YAML seed/export
+beautifulsoup4>=4.12,<5          # scraping connectors
+lxml>=5.2,<6                     # fast XML/HTML parse (SDMX, XBRL, filings)
+feedparser>=6.0,<7               # newswire RSS family
+pyjstat>=2.4,<3                  # JSON-stat (Eurostat / national stats)
+
+# --- Reports / exports ---
+reportlab>=4.2,<5                # PDF reports (Executive Audit, Gap, Player Shares)
+openpyxl>=3.1,<4                 # Excel exports (hyperlinked sources, _README sheet)
+
+# --- Auth + AI ---
+workos>=5.0,<6                   # WorkOS managed auth (Q10)
+anthropic>=0.34                  # AI field-mapping (Q6) + web-search fallback (Q8)

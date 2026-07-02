@@ -1,0 +1,99 @@
+# Estimation methods. tier qualifies confidence; is_primary_source gates HIGH.
+# source_class is used for method x source-class independence (Q5).
+version: 1
+methods:
+  # --- Tier A: primary structured ---
+  - method_code: comtrade_hs4_import
+    description: HS code crosswalk to subcategory, sums import flows
+    tier: A
+    source_class: A
+    is_primary_source: true
+    required_raw_tables: [raw_trade_flows]
+  - method_code: regulatory_count_unit_price
+    description: Counts active regulatory registrations, applies USD per unit
+    tier: A
+    source_class: A
+    is_primary_source: true
+    required_raw_tables: [raw_regulatory]
+  - method_code: filings_segment_extraction
+    description: Pulls regional/segment revenue from listed-company reporting
+    tier: A
+    source_class: A
+    is_primary_source: true
+    required_raw_tables: [raw_filings]
+  - method_code: tender_award_aggregation
+    description: Sums public procurement award volumes and prices
+    tier: A
+    source_class: A
+    is_primary_source: true
+    required_raw_tables: [raw_procurement]
+  # --- Tier B: industry / procedural ---
+  - method_code: top_down_industry_allocation
+    description: Allocates a published TAM down by country and segment
+    tier: B
+    source_class: B
+    is_primary_source: false
+    required_raw_tables: [raw_industry_reports]
+  - method_code: transcript_mining
+    description: Extracts share or revenue claims from earnings transcripts
+    tier: B
+    source_class: B
+    is_primary_source: false
+    required_raw_tables: [raw_transcripts]
+  - method_code: customs_reconciliation
+    description: Cross-checks import + export against statistical-yearbook production
+    tier: B
+    source_class: B
+    is_primary_source: false
+    required_raw_tables: [raw_trade_flows, raw_external_metrics]
+  - method_code: activity_volume_unit_price
+    description: Activity counts (procedures, transactions, shipments) x ASP
+    tier: B
+    source_class: B
+    is_primary_source: false
+    required_raw_tables: [raw_external_metrics]
+  - method_code: standards_membership_proxy
+    description: Standards-body membership as a production/revenue proxy
+    tier: B
+    source_class: B
+    is_primary_source: false
+    required_raw_tables: [raw_standards]
+  # --- Tier C: triangulation support ---
+  - method_code: patent_activity_proxy
+    description: Patent filing activity as an innovation/output proxy
+    tier: C
+    source_class: C
+    is_primary_source: false
+    required_raw_tables: [raw_patents]
+  - method_code: shipment_aggregation
+    description: Aggregates bill-of-lading shipment-level records
+    tier: C
+    source_class: C
+    is_primary_source: false
+    required_raw_tables: [raw_shipments]
+  - method_code: hiring_capacity_proxy
+    description: Job-posting / hiring volume as a capacity-expansion signal
+    tier: C
+    source_class: C
+    is_primary_source: false
+    required_raw_tables: [raw_signals]
+  - method_code: news_event_detection
+    description: Detects catalysts (M&A, capacity, regulation) from news/filings
+    tier: C
+    source_class: C
+    is_primary_source: false
+    required_raw_tables: [raw_news]
+  - method_code: macro_scaling
+    description: Scales a known cell to a peer geography via macro indicators
+    tier: C
+    source_class: C
+    is_primary_source: false
+    required_raw_tables: [raw_external_metrics]
+  # --- web-search fallback (Q8): always Class C, LOW-capped ---
+  - method_code: web_search_extraction
+    description: Agentic web search extracts a figure when no connector covers it
+    tier: C
+    source_class: C
+    is_primary_source: false
+    confidence_cap: low
+    required_raw_tables: [raw_news]

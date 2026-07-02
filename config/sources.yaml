@@ -1,0 +1,323 @@
+# Medtech-APAC demo source registry — one row per named source in the Jabil
+# MedTech APAC report (appx.2), grouped by the report's 7 source categories.
+# class A = trade/customs + regulatory + OEM filings + key macro (direct, quantitative);
+# class B = published market research; class C = primary interviews / softer macro.
+# The app/DB is authoritative; this file bootstraps + is a redacted export target.
+version: 1
+sources:
+  # ── Macro & Health Expenditure ─────────────────────────────────────────────
+  - source_id: who_gho
+    publisher: World Health Organization — Global Health Expenditure Database
+    url_pattern: https://apps.who.int/gho/data
+    auth: none
+    class: A
+    refresh_cadence: annual
+    raw_table: raw_external_metrics
+    access_method: api
+    enabled: true
+    notes: Health-expenditure backbone for activity_volume_unit_price anchoring.
+
+  - source_id: world_bank
+    publisher: World Bank — World Development Indicators
+    url_pattern: https://api.worldbank.org/v2
+    auth: none
+    class: A
+    connector: worldbank
+    refresh_cadence: annual
+    raw_table: raw_external_metrics
+    access_method: api
+    enabled: true
+    notes: Macro-scaling backbone (population, GDP, health spend); no auth.
+
+  - source_id: imf_weo
+    publisher: IMF — World Economic Outlook
+    url_pattern: https://www.imf.org/en/Publications/WEO
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_external_metrics
+    access_method: manual_upload
+    enabled: true
+    notes: GDP growth and FX assumptions for cross-year TAM projections.
+
+  - source_id: adb_stats
+    publisher: Asian Development Bank — Regional Statistics
+    url_pattern: https://data.adb.org
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_external_metrics
+    access_method: api
+    enabled: true
+    notes: APAC regional health and demographic indicators.
+
+  # ── Trade & Customs ────────────────────────────────────────────────────────
+  - source_id: un_comtrade
+    publisher: United Nations Statistics Division — UN Comtrade
+    url_pattern: https://comtradeapi.un.org/data/v1/get
+    auth: none
+    class: A
+    connector: comtrade
+    refresh_cadence: weekly
+    raw_table: raw_trade_flows
+    access_method: api
+    enabled: true
+    notes: HS 9018-9022 medical-instrument trade flows; primary import/export anchor.
+
+  - source_id: ita_medtech
+    publisher: ITA (US International Trade Administration) — MedTech sector stats
+    url_pattern: https://www.trade.gov/medical-device-industry
+    auth: none
+    class: A
+    refresh_cadence: annual
+    raw_table: raw_trade_flows
+    access_method: manual_upload
+    enabled: true
+    notes: Sector trade statistics corroborating Comtrade-derived flows.
+
+  - source_id: malaysia_matrade
+    publisher: MATRADE — Malaysia External Trade Development Corporation
+    url_pattern: https://www.matrade.gov.my/en/trade-statistics
+    auth: none
+    class: A
+    refresh_cadence: monthly
+    raw_table: raw_trade_flows
+    access_method: manual_upload
+    enabled: true
+    notes: Malaysia medical-device export statistics (gloves, IV sets, catheters).
+
+  - source_id: sg_enterprise
+    publisher: Enterprise Singapore — trade data
+    url_pattern: https://www.enterprisesg.gov.sg
+    auth: none
+    class: A
+    refresh_cadence: monthly
+    raw_table: raw_trade_flows
+    access_method: manual_upload
+    enabled: true
+    notes: Singapore re-export and domestic medical-device trade flows.
+
+  # ── Regulatory Registrations ───────────────────────────────────────────────
+  - source_id: cn_nmpa
+    publisher: China NMPA — device registration database
+    url_pattern: https://www.nmpa.gov.cn
+    auth: none
+    class: A
+    refresh_cadence: monthly
+    raw_table: raw_regulatory
+    access_method: scrape
+    enabled: true
+    notes: Device registration counts driving regulatory_count_unit_price for China.
+
+  - source_id: malaysia_mda
+    publisher: Malaysia MDA — Medical Device Authority product registration
+    url_pattern: https://mda.gov.my
+    auth: none
+    class: A
+    refresh_cadence: monthly
+    raw_table: raw_regulatory
+    access_method: scrape
+    enabled: true
+    notes: Malaysia device registrations (MDSAP/MDA pathway) for unit-count methods.
+
+  - source_id: sg_hsa
+    publisher: Singapore HSA — Medical Devices Register
+    url_pattern: https://www.hsa.gov.sg
+    auth: none
+    class: A
+    refresh_cadence: monthly
+    raw_table: raw_regulatory
+    access_method: scrape
+    enabled: true
+    notes: Singapore device register for regulatory-count triangulation.
+
+  - source_id: fda_510k
+    publisher: US FDA — 510(k) and PMA databases
+    url_pattern: https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpmn/pmn.cfm
+    auth: none
+    class: A
+    refresh_cadence: weekly
+    raw_table: raw_regulatory
+    access_method: api
+    enabled: true
+    notes: FDA clearances evidencing OEM export readiness (Mindray, United Imaging, MGI).
+
+  # ── Market Research (Published) ────────────────────────────────────────────
+  - source_id: imarc
+    publisher: IMARC Group — APAC medical device market reports
+    url_pattern: https://www.imarcgroup.com
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_industry_reports
+    access_method: manual_upload
+    enabled: true
+    notes: Top-down APAC market sizing for top_down_industry_allocation.
+
+  - source_id: mordor
+    publisher: Mordor Intelligence — MedTech segment reports
+    url_pattern: https://www.mordorintelligence.com
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_industry_reports
+    access_method: manual_upload
+    enabled: true
+    notes: Segment-level CAGR and sizing corroboration.
+
+  - source_id: statista
+    publisher: Statista — healthcare technology datasets
+    url_pattern: https://www.statista.com
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_industry_reports
+    access_method: manual_upload
+    enabled: true
+    notes: Cross-check datasets for device categories and country splits.
+
+  - source_id: globaldata
+    publisher: GlobalData — MedTech intelligence
+    url_pattern: https://www.globaldata.com
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_industry_reports
+    access_method: manual_upload
+    enabled: true
+    notes: Player share and market intelligence for niche/low-confidence cells.
+
+  # ── OEM Financial Disclosures ──────────────────────────────────────────────
+  - source_id: mindray_filings
+    publisher: Mindray Medical — annual reports & investor presentations
+    url_pattern: https://www.mindray.com/en/investor
+    auth: none
+    class: A
+    refresh_cadence: quarterly
+    raw_table: raw_filings
+    access_method: manual_upload
+    enabled: true
+    notes: Segment revenue (Patient Monitoring, IVD, Imaging) for filings extraction.
+
+  - source_id: united_imaging_hkex
+    publisher: United Imaging Healthcare — HKEX filings
+    url_pattern: https://www1.hkexnews.hk
+    auth: none
+    class: A
+    refresh_cadence: quarterly
+    raw_table: raw_filings
+    access_method: manual_upload
+    enabled: true
+    notes: Imaging segment revenue (CT, MRI, PET-CT, X-ray) from HKEX disclosures.
+
+  - source_id: microport_filings
+    publisher: MicroPort Scientific — annual reports
+    url_pattern: https://www.microport.com/investor
+    auth: none
+    class: A
+    refresh_cadence: quarterly
+    raw_table: raw_filings
+    access_method: manual_upload
+    enabled: true
+    notes: Cardiovascular and orthopedics segment revenue for filings extraction.
+
+  - source_id: terumo_filings
+    publisher: Terumo Corporation — annual reports
+    url_pattern: https://www.terumo.com/investors
+    auth: none
+    class: A
+    refresh_cadence: quarterly
+    raw_table: raw_filings
+    access_method: manual_upload
+    enabled: true
+    notes: Catheter / interventional / blood-management segment disclosures.
+
+  - source_id: nipro_filings
+    publisher: Nipro Corporation — annual reports
+    url_pattern: https://www.nipro.co.jp/en/ir
+    auth: none
+    class: A
+    refresh_cadence: quarterly
+    raw_table: raw_filings
+    access_method: manual_upload
+    enabled: true
+    notes: Dialysis, IV set and syringe segment disclosures (Penang manufacturing).
+
+  # ── Government & Policy ────────────────────────────────────────────────────
+  - source_id: mida
+    publisher: MIDA — Malaysia Investment Development Authority
+    url_pattern: https://www.mida.gov.my
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_external_metrics
+    access_method: manual_upload
+    enabled: true
+    notes: Malaysia medical-device manufacturing investment data.
+
+  - source_id: sg_edb
+    publisher: EDB — Singapore Economic Development Board
+    url_pattern: https://www.edb.gov.sg
+    auth: none
+    class: B
+    refresh_cadence: annual
+    raw_table: raw_external_metrics
+    access_method: manual_upload
+    enabled: true
+    notes: Singapore medtech manufacturing output statistics.
+
+  - source_id: cn_nhsa_vbp
+    publisher: China NHSA — VBP procurement results
+    url_pattern: https://www.nhsa.gov.cn
+    auth: none
+    class: A
+    refresh_cadence: event
+    raw_table: raw_procurement
+    access_method: scrape
+    enabled: true
+    notes: Volume-Based Procurement rounds (stents, joints, IVD, dialysis) — catalyst source.
+
+  - source_id: openfda
+    publisher: OpenFDA — device adverse event data
+    url_pattern: https://api.fda.gov/device
+    auth: none
+    class: B
+    refresh_cadence: weekly
+    raw_table: raw_external_metrics
+    access_method: api
+    enabled: true
+    notes: Device adverse-event volumes as an installed-base proxy signal.
+
+  - source_id: clinicaltrials
+    publisher: ClinicalTrials.gov — APAC trial registrations
+    url_pattern: https://clinicaltrials.gov/api/v2
+    auth: none
+    class: B
+    refresh_cadence: weekly
+    raw_table: raw_external_metrics
+    access_method: api
+    enabled: true
+    notes: APAC device-trial registrations as an adoption/pipeline proxy.
+
+  # ── Primary Research ───────────────────────────────────────────────────────
+  - source_id: primary_exec_interview
+    publisher: Senior APAC MedTech executive (former APAC President, top-3 OEM)
+    url_pattern: null
+    auth: none
+    class: C
+    refresh_cadence: ad_hoc
+    raw_table: raw_transcripts
+    access_method: interview
+    enabled: true
+    notes: Primary interview (May 2026); directional corroboration for low-data cells.
+
+  - source_id: primary_pe_interview
+    publisher: China-based healthcare PE investor
+    url_pattern: null
+    auth: none
+    class: C
+    refresh_cadence: ad_hoc
+    raw_table: raw_transcripts
+    access_method: interview
+    enabled: true
+    notes: Primary interview (May 2026); China market structure and VBP impact.

@@ -1,0 +1,51 @@
+# Local development stack for the GRX10 Automated Market Research Tool.
+#
+#   docker compose up -d db          # start Postgres 16
+#   docker compose run --rm migrate  # apply the Liquibase changelog (idempotent)
+#
+# Then run the app from the repo root (see README "Local development"):
+#   export DATABASE_URL=postgresql+psycopg://grx10:grx10@localhost:5433/grx10_market_research
+#   python -m backend.app.services.config_loader load     # seed spine from config/
+#   uvicorn backend.app.main:app --reload                 # API  -> :8000
+#   (cd frontend && npm install && npm run dev)            # web  -> :3000
+#   python -m pipeline.run                                # one pipeline pass
+#
+# Postgres is published on host port 5433 to avoid clashing with a local 5432.
+services:
+  db:
+    image: postgres:16
+    container_name: grx10-mr-db
+    environment:
+      POSTGRES_USER: grx10
+      POSTGRES_PASSWORD: grx10
+      POSTGRES_DB: grx10_market_research
+    ports:
+      - "5433:5432"
+    volumes:
+      - grx10_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grx10 -d grx10_market_research"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: apply the Liquibase changelog to the local DB, then exit.
+  migrate:
+    image: liquibase/liquibase:4.31
+    container_name: grx10-mr-migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./db/changelog:/liquibase/changelog:ro
+    command: >
+      --search-path=/liquibase/changelog
+      --changelog-file=changelog-master.sql
+      --url=jdbc:postgresql://db:5432/grx10_market_research
+      --username=grx10
+      --password=grx10
+      update
+    restart: "no"
+
+volumes:
+  grx10_pgdata:

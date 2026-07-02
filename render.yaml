@@ -1,0 +1,127 @@
+# Render Blueprint — GRX10 Automated Market Research Tool
+# ----------------------------------------------------------------------------
+# One Postgres 16 instance + a FastAPI web service + a Next.js web service +
+# a scheduled Cron Job that runs the ordered pipeline. The API service applies
+# the Liquibase changelog on every deploy (preDeployCommand) so the schema is
+# always migrated before new code goes live.
+#
+# Secrets (WorkOS, credential master key, Anthropic key, Slack) are NOT stored
+# here — they live in the `grx10-shared` env-var group, set once in the Render
+# dashboard. DATABASE_URL is wired automatically from the managed Postgres.
+#
+# Deploy:  push this repo, then in Render → "New" → "Blueprint" → pick this file.
+
+databases:
+  - name: grx10-mr-db
+    databaseName: grx10_market_research
+    plan: basic-256mb         # demo-sized; bump as data volume grows (raw_json JSONB is the archive)
+    postgresMajorVersion: "16"
+
+envVarGroups:
+  - name: grx10-shared
+    envVars:
+      # --- WorkOS managed auth (Q10) ---
+      - key: WORKOS_API_KEY
+        sync: false
+      - key: WORKOS_CLIENT_ID
+        sync: false
+      - key: WORKOS_COOKIE_PASSWORD   # >=32 chars; encrypts the AuthKit session cookie
+        sync: false
+      # --- Credential envelope-encryption master key (Q9) ---
+      # WARNING: rotating this invalidates every stored connector credential.
+      - key: CRED_MASTER_KEY
+        sync: false
+      # --- Anthropic (AI field-mapping + web-search fallback, Q6/Q8) ---
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # --- Pipeline failure notifications (Q7) ---
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+
+services:
+  # --------------------------------------------------------------------------
+  # FastAPI backend (Render Web Service). Repo root is the working dir so it can
+  # import backend.app, connectors, methods, and pipeline as top-level packages.
+  # --------------------------------------------------------------------------
+  - type: web
+    name: grx10-mr-api
+    runtime: python
+    plan: starter
+    rootDir: .
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      # Liquibase CLI for the preDeploy migration step.
+      curl -fsSL https://github.com/liquibase/liquibase/releases/download/v4.31.1/liquibase-4.31.1.tar.gz \
+        | tar -xz -C /opt 2>/dev/null || mkdir -p "$HOME/.liquibase" && \
+        curl -fsSL https://github.com/liquibase/liquibase/releases/download/v4.31.1/liquibase-4.31.1.tar.gz \
+        | tar -xz -C "$HOME/.liquibase"
+    # Apply DB migrations before the new release receives traffic.
+    preDeployCommand: bash scripts/apply_changelog.sh
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: grx10-mr-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12"
+      # Liquibase installed in buildCommand lands under $HOME/.liquibase.
+      - key: PATH
+        value: /opt/liquibase:$HOME/.liquibase:/usr/local/bin:/usr/bin:/bin
+      - fromGroup: grx10-shared
+
+  # --------------------------------------------------------------------------
+  # Next.js frontend (Render Web Service).
+  # --------------------------------------------------------------------------
+  - type: web
+    name: grx10-mr-web
+    runtime: node
+    plan: starter
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # Public base URL of the FastAPI service (server components fetch from it).
+      - key: NEXT_PUBLIC_API_BASE_URL
+        fromService:
+          type: web
+          name: grx10-mr-api
+          property: hostport
+      # AuthKit redirect target = this frontend's own URL.
+      - key: NEXT_PUBLIC_APP_URL
+        fromService:
+          type: web
+          name: grx10-mr-web
+          property: hostport
+      - key: WORKOS_REDIRECT_URI
+        sync: false   # set to https://<grx10-mr-web-url>/callback in the dashboard
+      - fromGroup: grx10-shared
+
+  # --------------------------------------------------------------------------
+  # Pipeline Cron Job (Render Cron). Runs pull -> normalize -> size ->
+  # score -> probe. Weekly (Mon 06:00 UTC); tighten per refresh cadence.
+  # --------------------------------------------------------------------------
+  - type: cron
+    name: grx10-mr-pipeline
+    runtime: python
+    plan: starter
+    rootDir: .
+    schedule: "0 6 * * 1"
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: python -m pipeline.run
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: grx10-mr-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - fromGroup: grx10-shared

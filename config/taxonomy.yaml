@@ -1,0 +1,171 @@
+# Medtech-APAC demo engagement — real taxonomy from the Jabil MedTech APAC report.
+# 7 families, 36 subcategories (main.1). subcategory_id = family digit * 10 + sub digit
+# (derived from the report "Code" column, e.g. 1_1 -> 11, 5_6 -> 56, 7_5 -> 75).
+# hs_codes drive comtrade_hs4_import; regulatory_codes drive regulatory methods.
+version: 1
+families:
+  - family_id: 1
+    name: Cardiovascular & Vascular
+    subcategories:
+      - subcategory_id: 11
+        name: Coronary Stents
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 12
+        name: Peripheral Vascular
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 13
+        name: Electrophysiology
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 14
+        name: Structural Heart
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 15
+        name: Cardiac Rhythm Management
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+  - family_id: 2
+    name: Surgical & GI Endoscopy
+    subcategories:
+      - subcategory_id: 21
+        name: Flexible GI Endoscopy
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 22
+        name: Rigid Endoscopy
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 23
+        name: Energy Devices
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 24
+        name: Endomechanical Instruments
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 25
+        name: Surgical Robotics
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+  - family_id: 3
+    name: In Vitro Diagnostics
+    subcategories:
+      - subcategory_id: 31
+        name: Chemistry & Immunoassay
+        hs_codes: ["9018", "3822"]
+        regulatory_codes: []
+      - subcategory_id: 32
+        name: Molecular Diagnostics
+        hs_codes: ["9018", "3822"]
+        regulatory_codes: []
+      - subcategory_id: 33
+        name: Point of Care Diagnostics
+        hs_codes: ["9018", "3822"]
+        regulatory_codes: []
+      - subcategory_id: 34
+        name: IVD Reagents & Consumables
+        hs_codes: ["9018", "3822"]
+        regulatory_codes: []
+      - subcategory_id: 35
+        name: Histology & Pathology
+        hs_codes: ["9018", "3822"]
+        regulatory_codes: []
+  - family_id: 4
+    name: Patient Monitoring & Critical Care
+    subcategories:
+      - subcategory_id: 41
+        name: Patient Monitors
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 42
+        name: Defibrillators
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 43
+        name: Anesthesia & Ventilators
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 44
+        name: Infusion Pumps
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 45
+        name: Dialysis
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 46
+        name: Continuous Glucose Monitors
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 56
+        name: Wearable Patient Monitoring
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+  - family_id: 5
+    name: Medical Imaging
+    subcategories:
+      - subcategory_id: 51
+        name: Computed Tomography
+        hs_codes: ["9018", "9022"]
+        regulatory_codes: []
+      - subcategory_id: 52
+        name: Magnetic Resonance Imaging
+        hs_codes: ["9018", "9022"]
+        regulatory_codes: []
+      - subcategory_id: 53
+        name: Ultrasound
+        hs_codes: ["9018", "9022"]
+        regulatory_codes: []
+      - subcategory_id: 54
+        name: X-Ray
+        hs_codes: ["9018", "9022"]
+        regulatory_codes: []
+      - subcategory_id: 55
+        name: Nuclear Imaging
+        hs_codes: ["9018", "9022"]
+        regulatory_codes: []
+  - family_id: 6
+    name: Consumables
+    subcategories:
+      - subcategory_id: 61
+        name: Wound Care
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 62
+        name: IV Sets & Syringes
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 63
+        name: Medical Gloves
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 64
+        name: Catheters
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 75
+        name: Injectables & Drug Delivery Devices
+        hs_codes: ["9018"]
+        regulatory_codes: []
+  - family_id: 7
+    name: Orthopedics & Spine
+    subcategories:
+      - subcategory_id: 71
+        name: Joint Reconstruction
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 72
+        name: Trauma Fixation
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 73
+        name: Spine
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
+      - subcategory_id: 74
+        name: Sports Medicine
+        hs_codes: ["9018", "9021"]
+        regulatory_codes: []
