@@ -687,82 +687,49 @@ def _call_anthropic(
         ]
     )
     methods_json = json.dumps(
-        [
-            {
-                "method_code": m["method_code"],
-                "tier": m["tier"],
-                "description": m["description"],
-                "required_raw_tables": m["required_raw_tables"],
-                "confidence_cap": m["confidence_cap"],
-            }
-            for m in all_methods
-        ]
+        [{"method_code": m["method_code"], "tier": m["tier"]} for m in all_methods]
     )
-    parsing_json = json.dumps(PARSING_BY_RAW_TABLE)
 
+    # COMPACT contract: the LLM makes the *judgment* calls (taxonomy fit, which
+    # sources/methods, new-vertical proposals) and we expand the verbose
+    # connector/method/execution prose deterministically from the builders. This
+    # keeps the generation small (~hundreds of tokens, a few seconds) instead of
+    # asking for the entire blueprint verbatim (~8k tokens, >90s → timeout).
     prompt = (
         "You are the research-planning engine of GRX10's automated market-research "
-        "platform. The platform turns a brief into a maintained, source-traceable "
-        "market model: connectors ingest raw payloads, parsers normalize them into "
-        "a typed raw layer, estimation methods triangulate every market cell "
-        "(subcategory x geography x year), and a confidence engine scores each cell.\n\n"
-        f"Current engagement taxonomy families: {families_json}\n"
+        "platform (connectors → typed raw layer → triangulation methods → "
+        "confidence-scored cells).\n\n"
+        f"Current taxonomy families: {families_json}\n"
         f"Geographies already modelled: {geos_json}\n"
-        f"Source catalog (use EXACT source_id values): {sources_json}\n"
-        f"Estimation methods (use EXACT method_code values): {methods_json}\n"
-        f"Default parsing methodology per raw table: {parsing_json}\n\n"
-        'Given the brief below, produce the full research plan. '
-        'Return ONLY a single JSON object, no markdown fences, no explanation:\n\n'
+        f"Source catalog (EXACT source_id values): {sources_json}\n"
+        f"Estimation methods (EXACT method_code values): {methods_json}\n\n"
+        'Given the brief, return ONLY one JSON object (no markdown, no prose):\n'
         f'Brief: """{input_text}"""\n\n'
-        "Required JSON schema:\n"
         "{\n"
-        '  "families": ["<exact family name from list, ONLY if the brief fits the current taxonomy>"],\n'
-        '  "geographies": ["<country name; prefer the modelled list, but new countries are allowed for new engagements>"],\n'
+        '  "families": ["<exact catalog family; [] if the brief is a different vertical>"],\n'
+        '  "geographies": ["<country; modelled names preferred, new ones allowed>"],\n'
         '  "years": {"from": <int>, "to": <int>},\n'
-        '  "constraints": ["<free-text constraint phrase>"],\n'
-        '  "taxonomy_status": {\n'
-        '    "in_catalog": <true if the brief\'s product domain fits the current taxonomy>,\n'
-        '    "proposed_families": ["<4-8 proposed family names — ONLY when in_catalog is false>"],\n'
-        '    "note": "<1-2 sentences on the taxonomy decision>"\n'
-        "  },\n"
-        '  "recommended_sources": [\n'
-        '    {"source_id": "<id>", "publisher": "<name>", "source_class": "<A|B|C>", "why": "<one sentence>"}\n'
-        "  ],\n"
-        '  "connector_plan": [\n'
-        "    {\n"
-        '      "source_id": "<id from catalog>", "publisher": "<name>", "source_class": "<A|B|C>",\n'
-        '      "raw_table": "<raw table>", "access": "<from catalog>", "status": "<from catalog>",\n'
-        '      "pulls": "<SPECIFIC to this brief: what will be pulled — name real HS-code ranges, registries, filers, indicators>",\n'
-        '      "parsing": "<how payloads are parsed/normalized — adapt the default parsing methodology to this brief>"\n'
-        "    }\n"
-        "  ],\n"
-        '  "method_plan": [\n'
-        '    {"method_code": "<code>", "tier": "<A|B|C>", "description": "<from registry>",\n'
-        '     "feeds_from": ["<raw tables>"], "methodology": "<2-3 sentences: how this method computes the estimate for THIS brief>"}\n'
-        "  ],\n"
-        '  "execution_plan": [\n'
-        '    {"step": <1..7>, "phase": "<Scope|Connect|Ingest|Parse|Estimate|Score|Deliver>",\n'
-        '     "title": "<short>", "detail": "<2-3 sentences, concrete and scoped to this brief>", "timeline": "<e.g. Day 0-1>"}\n'
-        "  ],\n"
-        '  "interpretation_notes": "<1-2 sentences explaining ambiguous choices>"\n'
+        '  "constraints": ["<verbatim exclude/focus clauses>"],\n'
+        '  "taxonomy_status": {"in_catalog": <bool>, "proposed_families": ["<4-8 names ONLY if in_catalog=false>"], "note": "<1-2 sentences>"},\n'
+        '  "source_ids": ["<EXACT catalog source_id to engage, when in_catalog>"],\n'
+        '  "proposed_connectors": [{"publisher":"<name>","source_class":"<A|B|C>","raw_table":"<one of the raw_* tables>","access":"<e.g. REST API — key required>","pulls":"<one line: what it pulls for this brief>"}],\n'
+        '  "method_codes": ["<EXACT method_code to run>"],\n'
+        '  "interpretation_notes": "<1-2 sentences on ambiguous choices>"\n'
         "}\n\n"
         "Rules:\n"
-        "- families: only names appearing EXACTLY in the provided list. If the brief targets a "
-        "different vertical (not covered by the taxonomy), leave families empty, set "
-        "taxonomy_status.in_catalog=false and propose a sensible new family taxonomy instead — "
-        "NEVER force-map an unrelated vertical onto the current taxonomy.\n"
-        "- 'SE Asia', 'Southeast Asia', 'APAC' means include ALL modelled geographies. "
-        "'exclude X' removes X. New engagements may add geographies not yet modelled.\n"
-        "- Default year range when unspecified: {\"from\": 2026, \"to\": 2031}.\n"
-        "- connector_plan: 8-14 sources. Prefer class-A and already-connected sources; always "
-        "cover trade flows, filings, regulatory, industry reports and external metrics so "
-        "tier-A methods can triangulate. Include the interview program and one news source.\n"
-        "- method_plan: every method whose required_raw_tables are covered by the connector "
-        "plan; mention the LOW cap where it applies.\n"
-        "- execution_plan: exactly 7 steps (Scope, Connect, Ingest, Parse, Estimate, Score, "
-        "Deliver) with realistic timelines; reference actual counts (connectors, methods, "
-        "approximate cells).\n"
-        "- constraints: capture 'exclude X' and 'focus on X' clauses verbatim."
+        "- families: EXACT catalog names only. If the brief targets a vertical NOT in the "
+        "taxonomy, set families=[], taxonomy_status.in_catalog=false, propose 4-8 new families, "
+        "and populate proposed_connectors (8-12) with plausible authorities for that vertical "
+        "(trade/customs, regulators, filings, industry reports, macro metrics, news). NEVER "
+        "force-map an unrelated vertical onto the medtech taxonomy.\n"
+        "- When in_catalog=true, fill source_ids (8-14 EXACT ids) covering trade flows, filings, "
+        "regulatory, industry reports and external metrics so tier-A methods can triangulate; "
+        "leave proposed_connectors empty.\n"
+        "- source_ids: prefer class-A, already-connected sources. Do NOT include a country-bound "
+        "source for a geography not in scope.\n"
+        "- method_codes: every method whose raw tables your sources cover.\n"
+        "- 'SE Asia'/'APAC' = all modelled geographies; 'exclude X' removes X. "
+        "Default years {\"from\":2026,\"to\":2031}."
     )
 
     resp = httpx.post(
@@ -774,32 +741,22 @@ def _call_anthropic(
         },
         json={
             "model": "claude-sonnet-4-6",
-            "max_tokens": 8192,
+            # Headroom for the new-vertical case (proposed families + 8-12
+            # proposed connectors); the in-catalog case uses far less.
+            "max_tokens": 3000,
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=90.0,
+        timeout=60.0,
     )
     resp.raise_for_status()
 
     raw_text: str = resp.json()["content"][0]["text"].strip()
-    # Strip markdown code fences if the model wraps in them despite instructions
     if raw_text.startswith("```"):
         raw_text = raw_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
     parsed = json.loads(raw_text)
 
-    rec_sources = [
-        RecommendedSource(
-            source_id=s["source_id"],
-            publisher=s.get("publisher", s["source_id"]),
-            source_class=s.get("source_class", "B"),
-            why=s.get("why", ""),
-        )
-        for s in parsed.get("recommended_sources", [])
-    ]
-
     families = parsed.get("families", [])
-    geographies = parsed.get("geographies", all_geographies)
+    geographies = parsed.get("geographies") or all_geographies
     years = parsed.get("years", {"from": 2026, "to": 2031})
 
     tax_raw = parsed.get("taxonomy_status") or {}
@@ -809,50 +766,70 @@ def _call_anthropic(
         note=tax_raw.get("note", ""),
     )
 
-    connector_plan = [
-        ConnectorPlanItem(
-            source_id=c.get("source_id", ""),
-            publisher=c.get("publisher", c.get("source_id", "")),
-            source_class=c.get("source_class", "B"),
-            raw_table=c.get("raw_table", ""),
-            access=c.get("access", "REST API"),
-            status=c.get("status", "catalog"),
-            pulls=c.get("pulls", ""),
-            parsing=c.get("parsing", PARSING_BY_RAW_TABLE.get(c.get("raw_table", ""), "")),
-        )
-        for c in parsed.get("connector_plan", [])
-    ]
-    method_plan = [
-        MethodPlanItem(
-            method_code=m.get("method_code", ""),
-            tier=m.get("tier", "C"),
-            description=m.get("description", ""),
-            feeds_from=list(m.get("feeds_from", [])),
-            methodology=m.get("methodology", ""),
-        )
-        for m in parsed.get("method_plan", [])
-    ]
-    execution_plan = [
-        ExecutionStep(
-            step=int(s.get("step", i + 1)),
-            phase=s.get("phase", ""),
-            title=s.get("title", ""),
-            detail=s.get("detail", ""),
-            timeline=s.get("timeline", ""),
-        )
-        for i, s in enumerate(parsed.get("execution_plan", []))
-    ]
+    # ── Expand the compact decision into the verbose blueprint ────────────────
+    by_id = {s["source_id"]: s for s in all_sources}
+    connector_plan: list[ConnectorPlanItem] = []
 
-    # Guarantee the blueprint sections are never empty: fall back to the
-    # deterministic builders when the model omits or truncates them.
+    # In-catalog: map the LLM's chosen source_ids onto real catalog connectors,
+    # generating pulls/parsing prose deterministically.
+    for sid in parsed.get("source_ids", []):
+        src = by_id.get(sid)
+        if not src:
+            continue
+        connector_plan.append(ConnectorPlanItem(
+            source_id=sid,
+            publisher=src["publisher"],
+            source_class=src["class"],
+            raw_table=src["raw_table"],
+            access=_access_label(src),
+            status=_status_label(src),
+            pulls=_pulls_text(src["raw_table"], families, geographies, years),
+            parsing=PARSING_BY_RAW_TABLE.get(src["raw_table"], "Typed normalization into the raw layer."),
+        ))
+
+    # New vertical: the LLM proposes connectors that don't exist in the catalog yet.
+    for i, c in enumerate(parsed.get("proposed_connectors", [])):
+        raw_table = c.get("raw_table", "")
+        connector_plan.append(ConnectorPlanItem(
+            source_id=f"proposed_{i+1}",
+            publisher=c.get("publisher", f"Proposed source {i+1}"),
+            source_class=c.get("source_class", "B"),
+            raw_table=raw_table,
+            access=c.get("access", "REST API"),
+            status="proposed — to onboard",
+            pulls=c.get("pulls", _pulls_text(raw_table, taxonomy.proposed_families or families, geographies, years)),
+            parsing=PARSING_BY_RAW_TABLE.get(raw_table, "Typed normalization into the raw layer."),
+        ))
+
     if not connector_plan:
         connector_plan = _build_connector_plan(all_sources, families, geographies, years)
+
+    # Methods: honour the LLM's picks when valid, else derive from raw-table coverage.
+    method_by_code = {m["method_code"]: m for m in all_methods}
+    covered_tables = {c.raw_table for c in connector_plan}
+    chosen = [method_by_code[mc] for mc in parsed.get("method_codes", []) if mc in method_by_code]
+    method_source = chosen or all_methods
+    method_plan = _build_method_plan(
+        [m for m in method_source
+         if not m["required_raw_tables"] or set(m["required_raw_tables"]) & covered_tables],
+        connector_plan,
+    )
     if not method_plan:
         method_plan = _build_method_plan(all_methods, connector_plan)
-    if not execution_plan:
-        execution_plan = _build_execution_plan(
-            families, geographies, years, connector_plan, method_plan, taxonomy
+
+    execution_plan = _build_execution_plan(
+        families, geographies, years, connector_plan, method_plan, taxonomy
+    )
+
+    # Recommended-sources list (legacy panel) derived from the connector plan.
+    rec_sources = [
+        RecommendedSource(
+            source_id=c.source_id, publisher=c.publisher,
+            source_class=c.source_class,
+            why=c.pulls[:140],
         )
+        for c in connector_plan[:8]
+    ]
 
     return BriefInterpretation(
         families=families,
@@ -860,9 +837,7 @@ def _call_anthropic(
         years=years,
         constraints=parsed.get("constraints", []),
         recommended_sources=rec_sources,
-        interpretation_notes=parsed.get(
-            "interpretation_notes", "Interpreted by Claude."
-        ),
+        interpretation_notes=parsed.get("interpretation_notes", "Interpreted by Claude."),
         taxonomy_status=taxonomy,
         connector_plan=connector_plan,
         method_plan=method_plan,
