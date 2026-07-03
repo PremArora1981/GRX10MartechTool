@@ -41,7 +41,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.app.config import settings
-from backend.app.deps import DbSession, CurrentUserDep, require_admin
+from backend.app.deps import DbSession, CurrentUserDep, EngagementDep, require_admin
 from backend.app.schemas import SourceOut
 from backend.app.services import credential_service
 from backend.app.services.credential_service import CredentialServiceError
@@ -819,8 +819,9 @@ class SuggestMappingOut(BaseModel):
 # Internal helpers
 # =========================================================================== #
 
-def _load_source_row(session: Session, source_id: str) -> dict[str, Any]:
-    """Load one sources row as a plain dict, aliasing the 'class' column."""
+def _load_source_row(session: Session, source_id: str, engagement_id: str) -> dict[str, Any]:
+    """Load one sources row (scoped to the active engagement) as a plain dict,
+    aliasing the 'class' column."""
     row = session.execute(
         text("""
             SELECT source_id, publisher, url_pattern, auth, auth_secret_ref,
@@ -828,9 +829,9 @@ def _load_source_row(session: Session, source_id: str) -> dict[str, Any]:
                    access_method, discovered, monthly_budget, quota_ceiling,
                    last_probe_status, last_probe_at, last_probe_detail,
                    enabled, notes, created_at
-            FROM sources WHERE source_id = :sid
+            FROM sources WHERE source_id = :sid AND engagement_id = :eng
         """),
-        {"sid": source_id},
+        {"sid": source_id, "eng": engagement_id},
     ).one_or_none()
     if row is None:
         raise HTTPException(
@@ -840,8 +841,8 @@ def _load_source_row(session: Session, source_id: str) -> dict[str, Any]:
     return dict(row._mapping)
 
 
-def _load_all_source_rows(session: Session) -> list[dict[str, Any]]:
-    """Return all sources rows as plain dicts."""
+def _load_all_source_rows(session: Session, engagement_id: str) -> list[dict[str, Any]]:
+    """Return all sources rows for the active engagement as plain dicts."""
     rows = session.execute(
         text("""
             SELECT source_id, publisher, url_pattern, auth, auth_secret_ref,
@@ -849,8 +850,9 @@ def _load_all_source_rows(session: Session) -> list[dict[str, Any]]:
                    access_method, discovered, monthly_budget, quota_ceiling,
                    last_probe_status, last_probe_at, last_probe_detail,
                    enabled, notes, created_at
-            FROM sources ORDER BY source_id
-        """)
+            FROM sources WHERE engagement_id = :eng ORDER BY source_id
+        """),
+        {"eng": engagement_id},
     ).fetchall()
     return [dict(r._mapping) for r in rows]
 
@@ -1005,22 +1007,24 @@ def _run_probe(source_row: dict[str, Any], credential: str | None) -> ProbeResul
 
 
 def _write_probe_result(
-    session: Session, source_id: str, result: ProbeResult, probed_at: datetime
+    session: Session, source_id: str, result: ProbeResult, probed_at: datetime,
+    engagement_id: str,
 ) -> None:
-    """Persist the probe outcome into sources.last_probe_*."""
+    """Persist the probe outcome into sources.last_probe_* (engagement-scoped)."""
     session.execute(
         text("""
             UPDATE sources
             SET last_probe_status = :status,
                 last_probe_at     = :at,
                 last_probe_detail = :detail
-            WHERE source_id = :sid
+            WHERE source_id = :sid AND engagement_id = :eng
         """),
         {
             "status": result.status,
             "at": probed_at,
             "detail": result.detail[:2000] if result.detail else None,
             "sid": source_id,
+            "eng": engagement_id,
         },
     )
 
@@ -1231,6 +1235,7 @@ def _names_similar(source_key: str, col: str) -> bool:
 )
 def get_catalog(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     wave: int | None = None,
     feasibility: str | None = None,
@@ -1243,7 +1248,7 @@ def get_catalog(
     * ``feasibility`` — EASY | MEDIUM | HARD.
     * ``in_db_only`` — only return sources already added to the database.
     """
-    db_rows = _load_all_source_rows(db)
+    db_rows = _load_all_source_rows(db, engagement_id)
     entries = _merge_catalog_with_db(_CATALOG, db_rows)
 
     if wave is not None:
@@ -1263,6 +1268,7 @@ def get_catalog(
 )
 def get_health(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     enabled_only: bool = True,
 ) -> list[ConnectorHealthOut]:
@@ -1271,7 +1277,7 @@ def get_health(
     ``budget_warning=True`` when ``last_probe_status == 'QUOTA_EXHAUSTED'``
     (the pipeline 7-state taxonomy surfaces this before a hard block).
     """
-    rows = _load_all_source_rows(db)
+    rows = _load_all_source_rows(db, engagement_id)
     out: list[ConnectorHealthOut] = []
     for row in rows:
         if enabled_only and not row.get("enabled", True):
@@ -1299,7 +1305,9 @@ def get_health(
     response_model=None,
     summary="List all configured sources (sources table) for the connectors admin view",
 )
-def list_sources(db: DbSession, _user: CurrentUserDep) -> list[dict[str, Any]]:
+def list_sources(
+    db: DbSession, engagement_id: EngagementDep, _user: CurrentUserDep
+) -> list[dict[str, Any]]:
     """Return every row in the ``sources`` table in the shape the frontend
     ``Source`` type expects.
 
@@ -1316,8 +1324,10 @@ def list_sources(db: DbSession, _user: CurrentUserDep) -> list[dict[str, Any]]:
                    last_probe_status, last_probe_at, last_probe_detail,
                    enabled, notes
             FROM sources
+            WHERE engagement_id = :eng
             ORDER BY enabled DESC, source_id
-        """)
+        """),
+        {"eng": engagement_id},
     ).mappings().all()
 
     return [_source_admin_dict(dict(r)) for r in rows]
@@ -1328,13 +1338,15 @@ def list_sources(db: DbSession, _user: CurrentUserDep) -> list[dict[str, Any]]:
     response_model=None,
     summary="Fetch a single configured source (sources table) for the admin detail view",
 )
-def get_source(source_id: str, db: DbSession, _user: CurrentUserDep) -> dict[str, Any]:
+def get_source(
+    source_id: str, db: DbSession, engagement_id: EngagementDep, _user: CurrentUserDep
+) -> dict[str, Any]:
     """Return one ``sources`` row in the same shape as the list endpoint's items.
 
     Used by the connectors admin detail drawer (``/connectors/{source_id}``).
     Returns 404 when the source is not in the DB.
     """
-    row = _load_source_row(db, source_id)  # 404 if source not in DB
+    row = _load_source_row(db, source_id, engagement_id)  # 404 if source not in DB
     return _source_admin_dict(row)
 
 
@@ -1344,18 +1356,20 @@ def get_source(source_id: str, db: DbSession, _user: CurrentUserDep) -> dict[str
     summary="Enable a configured source — owner/admin gated",
     dependencies=[Depends(require_admin)],
 )
-def enable_source(source_id: str, db: DbSession) -> dict[str, Any]:
+def enable_source(
+    source_id: str, db: DbSession, engagement_id: EngagementDep
+) -> dict[str, Any]:
     """Set ``sources.enabled = true`` and return the updated row (list shape).
 
     Returns 404 when the source is not in the DB.
     """
-    _load_source_row(db, source_id)  # 404 if source not in DB
+    _load_source_row(db, source_id, engagement_id)  # 404 if source not in DB
     db.execute(
-        text("UPDATE sources SET enabled = true WHERE source_id = :sid"),
-        {"sid": source_id},
+        text("UPDATE sources SET enabled = true WHERE source_id = :sid AND engagement_id = :eng"),
+        {"sid": source_id, "eng": engagement_id},
     )
     db.flush()
-    return _source_admin_dict(_load_source_row(db, source_id))
+    return _source_admin_dict(_load_source_row(db, source_id, engagement_id))
 
 
 @router.post(
@@ -1364,18 +1378,20 @@ def enable_source(source_id: str, db: DbSession) -> dict[str, Any]:
     summary="Disable a configured source — owner/admin gated",
     dependencies=[Depends(require_admin)],
 )
-def disable_source(source_id: str, db: DbSession) -> dict[str, Any]:
+def disable_source(
+    source_id: str, db: DbSession, engagement_id: EngagementDep
+) -> dict[str, Any]:
     """Set ``sources.enabled = false`` and return the updated row (list shape).
 
     Returns 404 when the source is not in the DB.
     """
-    _load_source_row(db, source_id)  # 404 if source not in DB
+    _load_source_row(db, source_id, engagement_id)  # 404 if source not in DB
     db.execute(
-        text("UPDATE sources SET enabled = false WHERE source_id = :sid"),
-        {"sid": source_id},
+        text("UPDATE sources SET enabled = false WHERE source_id = :sid AND engagement_id = :eng"),
+        {"sid": source_id, "eng": engagement_id},
     )
     db.flush()
-    return _source_admin_dict(_load_source_row(db, source_id))
+    return _source_admin_dict(_load_source_row(db, source_id, engagement_id))
 
 
 @router.post(
@@ -1388,6 +1404,7 @@ def disable_source(source_id: str, db: DbSession) -> dict[str, Any]:
 def select_connector(
     body: ConnectorSelectIn,
     db: DbSession,
+    engagement_id: EngagementDep,
 ) -> SourceOut:
     """Enable a connector from the static catalog.
 
@@ -1410,11 +1427,11 @@ def select_connector(
     db.execute(
         text("""
             INSERT INTO sources
-                (source_id, publisher, url_pattern, auth, class, connector,
+                (source_id, engagement_id, publisher, url_pattern, auth, class, connector,
                  raw_table, access_method, monthly_budget, quota_ceiling,
                  enabled, notes, created_at)
             VALUES
-                (:source_id, :publisher, :url_pattern, :auth, :class, :connector,
+                (:source_id, :engagement_id, :publisher, :url_pattern, :auth, :class, :connector,
                  :raw_table, :access_method, :monthly_budget, :quota_ceiling,
                  true, :notes, :now)
             ON CONFLICT (source_id) DO UPDATE
@@ -1425,6 +1442,7 @@ def select_connector(
         """),
         {
             "source_id": body.source_id,
+            "engagement_id": engagement_id,
             "publisher": entry["publisher"],
             "url_pattern": entry.get("url_pattern"),
             "auth": entry.get("auth", "none"),
@@ -1439,7 +1457,7 @@ def select_connector(
         },
     )
     db.flush()
-    row = _load_source_row(db, body.source_id)
+    row = _load_source_row(db, body.source_id, engagement_id)
     return SourceOut.model_validate(row)
 
 
@@ -1453,6 +1471,7 @@ def select_connector(
 def create_custom_source(
     body: CustomSourceIn,
     db: DbSession,
+    engagement_id: EngagementDep,
 ) -> SourceOut:
     """Create (or update) a declarative generic-REST connector source.
 
@@ -1482,11 +1501,11 @@ def create_custom_source(
     db.execute(
         text("""
             INSERT INTO sources
-                (source_id, publisher, url_pattern, auth, class, connector,
+                (source_id, engagement_id, publisher, url_pattern, auth, class, connector,
                  raw_table, access_method, refresh_cadence, monthly_budget, quota_ceiling,
                  enabled, notes, discovered, created_at)
             VALUES
-                (:source_id, :publisher, :url_pattern, :auth, :class, 'generic_rest',
+                (:source_id, :engagement_id, :publisher, :url_pattern, :auth, :class, 'generic_rest',
                  :raw_table, :access_method, :refresh_cadence, :monthly_budget, :quota_ceiling,
                  true, :notes, false, :now)
             ON CONFLICT (source_id) DO UPDATE
@@ -1503,6 +1522,7 @@ def create_custom_source(
         """),
         {
             "source_id": body.source_id,
+            "engagement_id": engagement_id,
             "publisher": body.publisher,
             "url_pattern": body.url_pattern,
             "auth": body.auth,
@@ -1517,7 +1537,7 @@ def create_custom_source(
         },
     )
     db.flush()
-    row = _load_source_row(db, body.source_id)
+    row = _load_source_row(db, body.source_id, engagement_id)
     return SourceOut.model_validate(row)
 
 
@@ -1532,6 +1552,7 @@ def write_credential(
     source_id: str,
     body: CredentialIn,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: CurrentUserDep,
 ) -> CredentialOut:
     """Envelope-encrypt and store a connector API key/token (Q9).
@@ -1546,8 +1567,8 @@ def write_credential(
     The endpoint returns ``201`` with the ``cred_ref`` pointer only (never the
     secret). The frontend must never store or display the plaintext.
     """
-    # Verify the source exists.
-    row = _load_source_row(db, source_id)
+    # Verify the source exists in this engagement.
+    row = _load_source_row(db, source_id, engagement_id)
 
     action_before = "rotated" if row.get("auth_secret_ref") else "added"
 
@@ -1566,8 +1587,11 @@ def write_credential(
 
     if body.label:
         db.execute(
-            text("UPDATE sources SET notes = COALESCE(notes, '') || :label WHERE source_id = :sid"),
-            {"label": f" [key: {body.label}]", "sid": source_id},
+            text(
+                "UPDATE sources SET notes = COALESCE(notes, '') || :label "
+                "WHERE source_id = :sid AND engagement_id = :eng"
+            ),
+            {"label": f" [key: {body.label}]", "sid": source_id, "eng": engagement_id},
         )
 
     return CredentialOut(
@@ -1589,13 +1613,14 @@ def write_credential(
 def revoke_credential(
     source_id: str,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: CurrentUserDep,
 ) -> None:
     """Remove the stored credential for a source and audit the removal.
 
     Returns 204 regardless of whether a credential existed (idempotent).
     """
-    _load_source_row(db, source_id)  # 404 if source not in DB
+    _load_source_row(db, source_id, engagement_id)  # 404 if source not in this engagement
     credential_service.revoke(db, source_id=source_id, actor=user.email or user.id)
 
 
@@ -1607,6 +1632,7 @@ def revoke_credential(
 def probe_connector(
     source_id: str,
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> ProbeOut:
     """Execute a live probe for the connector and write back the result.
@@ -1616,7 +1642,7 @@ def probe_connector(
     persisted to ``sources.last_probe_status / last_probe_at / last_probe_detail``
     so the health dashboard reflects the outcome.
     """
-    row = _load_source_row(db, source_id)
+    row = _load_source_row(db, source_id, engagement_id)
 
     # Decrypt the credential when the source declares auth.
     credential: str | None = None
@@ -1626,7 +1652,7 @@ def probe_connector(
 
     result = _run_probe(row, credential)
     probed_at = datetime.now(timezone.utc)
-    _write_probe_result(db, source_id, result, probed_at)
+    _write_probe_result(db, source_id, result, probed_at, engagement_id)
 
     return ProbeOut(
         source_id=source_id,

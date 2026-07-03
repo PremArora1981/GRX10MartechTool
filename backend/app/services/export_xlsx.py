@@ -280,6 +280,7 @@ def _add_readme_sheet(
 def _load_cells(
     session: Session,
     *,
+    engagement_id: str,
     cell_id: int | None,
     subcategory_id: int | None,
     geography_id: int | None,
@@ -303,7 +304,9 @@ def _load_cells(
 
     stmt = select(Cell).options(*opts).order_by(Cell.year.desc(), Cell.cell_id)
 
-    where = []
+    # Engagement scope is mandatory: always filter by engagement_id so the query
+    # is scoped even when no other filter is supplied.
+    where = [Cell.engagement_id == engagement_id]
     if cell_id is not None:
         where.append(Cell.cell_id == cell_id)
     if subcategory_id is not None:
@@ -344,6 +347,7 @@ def _build_cell_explorer(
     wb: Workbook,
     session: Session,
     *,
+    engagement_id: str,
     cell_id: int | None,
     subcategory_id: int | None,
     geography_id: int | None,
@@ -362,6 +366,7 @@ def _build_cell_explorer(
 
     cells = _load_cells(
         session,
+        engagement_id=engagement_id,
         cell_id=cell_id,
         subcategory_id=subcategory_id,
         geography_id=geography_id,
@@ -402,6 +407,7 @@ def _build_cell_detail(
     wb: Workbook,
     session: Session,
     *,
+    engagement_id: str,
     cell_id: int | None,
     subcategory_id: int | None,
     geography_id: int | None,
@@ -416,6 +422,7 @@ def _build_cell_detail(
     """
     cells = _load_cells(
         session,
+        engagement_id=engagement_id,
         cell_id=cell_id,
         subcategory_id=subcategory_id,
         geography_id=geography_id,
@@ -500,6 +507,7 @@ def _build_player_shares(
     wb: Workbook,
     session: Session,
     *,
+    engagement_id: str,
     cell_id: int | None,
     subcategory_id: int | None,
     geography_id: int | None,
@@ -515,6 +523,7 @@ def _build_player_shares(
     # Resolve the target cell IDs from filters.
     cells = _load_cells(
         session,
+        engagement_id=engagement_id,
         cell_id=cell_id,
         subcategory_id=subcategory_id,
         geography_id=geography_id,
@@ -542,7 +551,10 @@ def _build_player_shares(
             session.execute(
                 select(PlayerShare)
                 .options(joinedload(PlayerShare.company), joinedload(PlayerShare.source))
-                .where(PlayerShare.cell_id.in_(cell_ids))
+                .where(
+                    PlayerShare.engagement_id == engagement_id,
+                    PlayerShare.cell_id.in_(cell_ids),
+                )
                 .order_by(PlayerShare.cell_id, PlayerShare.rank)
             )
             .unique()
@@ -600,7 +612,10 @@ def _build_player_shares(
                     joinedload(SupplierRelationship.buyer),
                     joinedload(SupplierRelationship.supplier),
                 )
-                .where(SupplierRelationship.cell_id.in_(cell_ids))
+                .where(
+                    SupplierRelationship.engagement_id == engagement_id,
+                    SupplierRelationship.cell_id.in_(cell_ids),
+                )
                 .order_by(SupplierRelationship.relationship_id)
             )
             .unique()
@@ -612,7 +627,10 @@ def _build_player_shares(
         if rel_source_ids:
             for src in (
                 session.execute(
-                    select(Source).where(Source.source_id.in_(rel_source_ids))
+                    select(Source).where(
+                        Source.engagement_id == engagement_id,
+                        Source.source_id.in_(rel_source_ids),
+                    )
                 )
                 .scalars()
                 .all()
@@ -658,6 +676,7 @@ def _build_triangulation(
     wb: Workbook,
     session: Session,
     *,
+    engagement_id: str,
     cell_id: int | None,
     subcategory_id: int | None,
     geography_id: int | None,
@@ -673,6 +692,7 @@ def _build_triangulation(
     """
     cells = _load_cells(
         session,
+        engagement_id=engagement_id,
         cell_id=cell_id,
         subcategory_id=subcategory_id,
         geography_id=geography_id,
@@ -736,7 +756,8 @@ def _build_triangulation(
         summaries = (
             session.execute(
                 select(CellTriangulationSummary).where(
-                    CellTriangulationSummary.cell_id.in_(cell_ids)
+                    CellTriangulationSummary.engagement_id == engagement_id,
+                    CellTriangulationSummary.cell_id.in_(cell_ids),
                 )
             )
             .scalars()
@@ -781,6 +802,7 @@ def _build_assumptions(
     wb: Workbook,
     session: Session,
     *,
+    engagement_id: str,
     subcategory_id: int | None,
     geography_id: int | None,
 ) -> None:
@@ -792,7 +814,8 @@ def _build_assumptions(
     reverse-drill from each assumption to influenced cells.
     """
     # --- Load assumptions ---
-    where = []
+    # Engagement scope is mandatory: always filter by engagement_id.
+    where = [Assumption.engagement_id == engagement_id]
     if subcategory_id is not None:
         where.append(Assumption.scope_subcategory_id == subcategory_id)
     if geography_id is not None:
@@ -811,7 +834,10 @@ def _build_assumptions(
     if company_ids:
         for co in (
             session.execute(
-                select(Company).where(Company.company_id.in_(company_ids))
+                select(Company).where(
+                    Company.engagement_id == engagement_id,
+                    Company.company_id.in_(company_ids),
+                )
             )
             .scalars()
             .all()
@@ -824,7 +850,10 @@ def _build_assumptions(
     if source_ids:
         for src in (
             session.execute(
-                select(Source).where(Source.source_id.in_(source_ids))
+                select(Source).where(
+                    Source.engagement_id == engagement_id,
+                    Source.source_id.in_(source_ids),
+                )
             )
             .scalars()
             .all()
@@ -886,7 +915,10 @@ def _build_assumptions(
         links = (
             session.execute(
                 select(CellAssumptionLink)
-                .where(CellAssumptionLink.assumption_id.in_(assumption_ids))
+                .where(
+                    CellAssumptionLink.engagement_id == engagement_id,
+                    CellAssumptionLink.assumption_id.in_(assumption_ids),
+                )
                 .order_by(CellAssumptionLink.cell_id, CellAssumptionLink.assumption_id)
             )
             .scalars()
@@ -900,7 +932,10 @@ def _build_assumptions(
                 session.execute(
                     select(Cell)
                     .options(joinedload(Cell.subcategory), joinedload(Cell.geography))
-                    .where(Cell.cell_id.in_(link_cell_ids))
+                    .where(
+                        Cell.engagement_id == engagement_id,
+                        Cell.cell_id.in_(link_cell_ids),
+                    )
                 )
                 .unique()
                 .scalars()
@@ -943,6 +978,7 @@ def build_workbook(
     flavor: ExportFlavor,
     session: Session,
     *,
+    engagement_id: str,
     cell_id: int | None = None,
     subcategory_id: int | None = None,
     geography_id: int | None = None,
@@ -999,6 +1035,7 @@ def build_workbook(
     if flavor == "cell_explorer":
         _build_cell_explorer(
             wb, session,
+            engagement_id=engagement_id,
             cell_id=cell_id,
             subcategory_id=subcategory_id,
             geography_id=geography_id,
@@ -1009,6 +1046,7 @@ def build_workbook(
     elif flavor == "cell_detail":
         _build_cell_detail(
             wb, session,
+            engagement_id=engagement_id,
             cell_id=cell_id,
             subcategory_id=subcategory_id,
             geography_id=geography_id,
@@ -1019,6 +1057,7 @@ def build_workbook(
     elif flavor == "player_shares":
         _build_player_shares(
             wb, session,
+            engagement_id=engagement_id,
             cell_id=cell_id,
             subcategory_id=subcategory_id,
             geography_id=geography_id,
@@ -1029,6 +1068,7 @@ def build_workbook(
     elif flavor == "triangulation":
         _build_triangulation(
             wb, session,
+            engagement_id=engagement_id,
             cell_id=cell_id,
             subcategory_id=subcategory_id,
             geography_id=geography_id,
@@ -1039,6 +1079,7 @@ def build_workbook(
     elif flavor == "assumptions":
         _build_assumptions(
             wb, session,
+            engagement_id=engagement_id,
             subcategory_id=subcategory_id,
             geography_id=geography_id,
         )

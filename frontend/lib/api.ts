@@ -22,6 +22,10 @@ import type {
   CellTriangulationView,
   CellView,
   Company,
+  Engagement,
+  EngagementCreate,
+  EngagementCreateResult,
+  EngagementPopulateResult,
   Geography,
   MethodRegistryEntry,
   Paginated,
@@ -84,16 +88,40 @@ function buildUrl(path: string, query?: Record<string, Primitive>): string {
 }
 
 /** Low-level typed request. All higher-level helpers funnel through this. */
+/**
+ * Resolve the active-engagement header so every request is scoped to the
+ * engagement the user selected. Isomorphic: on the server (RSC/page fetches) we
+ * read the incoming request's cookie via `next/headers`; on the client we read
+ * `document.cookie`. Absent → backend defaults to the Medtech demo. The dynamic
+ * import is guarded by the window check so `next/headers` never enters the
+ * client bundle.
+ */
+async function engagementHeader(): Promise<Record<string, string>> {
+  try {
+    if (typeof window === "undefined") {
+      const { cookies } = await import("next/headers");
+      const id = cookies().get("engagement_id")?.value;
+      return id ? { "X-Engagement-Id": id } : {};
+    }
+    const m = document.cookie.match(/(?:^|;\s*)engagement_id=([^;]+)/);
+    return m ? { "X-Engagement-Id": decodeURIComponent(m[1]) } : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function apiRequest<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
   const { query, json, headers, next, ...rest } = options;
+  const engHeader = await engagementHeader();
   const init: RequestInit & { next?: RequestOptions["next"] } = {
     ...rest,
     headers: {
       Accept: "application/json",
       ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...engHeader,
       ...headers,
     },
   };
@@ -422,8 +450,10 @@ export const api = {
    * Served by GET /stats/overview (backend/app/routers/stats.py).
    * Year defaults to 2026 (the first model year in the Medtech APAC dataset).
    */
-  getStatsOverview: (year = 2026) =>
-    apiRequest<StatsOverview>("/stats/overview", { query: { year } }),
+  getStatsOverview: (year?: number) =>
+    apiRequest<StatsOverview>("/stats/overview", {
+      query: year !== undefined ? { year } : undefined,
+    }),
 
   // --- Reports + Excel exports --------------------------------------------
   /**
@@ -487,6 +517,40 @@ export const api = {
       method: "POST",
       json: { text },
     }),
+
+  // ── Engagements (multi-engagement switcher + create-from-brief) ────────────
+  listEngagements: (includeArchived = false) =>
+    apiRequest<Engagement[]>("/engagements", {
+      query: includeArchived ? { include_archived: true } : undefined,
+      cache: "no-store",
+    }),
+
+  currentEngagement: () =>
+    apiRequest<Engagement>("/engagements/current", { cache: "no-store" }),
+
+  createEngagement: (body: EngagementCreate) =>
+    apiRequest<EngagementCreateResult>("/engagements", {
+      method: "POST",
+      json: body,
+    }),
+
+  activateEngagement: (engagementId: string) =>
+    apiRequest<Engagement>(
+      `/engagements/${encodeURIComponent(engagementId)}/activate`,
+      { method: "POST" },
+    ),
+
+  archiveEngagement: (engagementId: string) =>
+    apiRequest<Engagement>(
+      `/engagements/${encodeURIComponent(engagementId)}/archive`,
+      { method: "POST" },
+    ),
+
+  populateEngagement: (engagementId: string) =>
+    apiRequest<EngagementPopulateResult>(
+      `/engagements/${encodeURIComponent(engagementId)}/populate`,
+      { method: "POST" },
+    ),
 } as const;
 
 // ── Report / export types (shared between api.ts and the reports screen) ───

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import type { AppRole } from "@/lib/types";
+import { EngagementSwitcher } from "@/components/EngagementSwitcher";
 
 /**
  * Persistent left-nav application shell. Links the nine v1 screens, highlights
@@ -101,6 +102,9 @@ export function NavShell({ user, children }: NavShellProps) {
             <div className="text-2xs text-white/55">Market Research</div>
           </div>
         </div>
+
+        {/* Engagement switcher */}
+        <EngagementSwitcher />
 
         {/* Nav */}
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2">

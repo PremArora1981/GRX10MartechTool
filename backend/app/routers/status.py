@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.orm import Session
 
-from backend.app.deps import CurrentUserDep, DbSession
+from backend.app.deps import CurrentUserDep, DbSession, EngagementDep
 from backend.app.models import Cell, CellTriangulation, Source
 
 logger = logging.getLogger("grx10.routers.status")
@@ -209,14 +209,23 @@ def _build_health_summary(sources: list[Source]) -> ConnectorHealthSummary:
     return summary
 
 
-def _build_coverage(db: Session) -> CellCoverageStats:
+def _build_coverage(db: Session, engagement_id: str) -> CellCoverageStats:
     """Compute cell coverage stats from the cells and cell_triangulation tables."""
-    total: int = db.scalar(select(func.count()).select_from(Cell)) or 0
+    total: int = (
+        db.scalar(
+            select(func.count())
+            .select_from(Cell)
+            .where(Cell.engagement_id == engagement_id)
+        )
+        or 0
+    )
 
     # Cells that have at least one triangulation estimate (deduped by cell_id).
     cells_with_estimates: int = (
         db.scalar(
-            select(func.count(func.distinct(CellTriangulation.cell_id)))
+            select(func.count(func.distinct(CellTriangulation.cell_id))).where(
+                CellTriangulation.engagement_id == engagement_id
+            )
         )
         or 0
     )
@@ -228,7 +237,9 @@ def _build_coverage(db: Session) -> CellCoverageStats:
     # Confidence distribution (cells table, column written by the pipeline after
     # reading the cell_triangulation_summary view).
     conf_rows = db.execute(
-        select(Cell.confidence, func.count().label("n")).group_by(Cell.confidence)
+        select(Cell.confidence, func.count().label("n"))
+        .where(Cell.engagement_id == engagement_id)
+        .group_by(Cell.confidence)
     ).all()
     by_conf: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
     for conf, n in conf_rows:
@@ -275,21 +286,28 @@ def _make_freshness_item(src: Source) -> SourceFreshnessItem:
         "Drives the status-page hero section."
     ),
 )
-def get_status(db: DbSession, _user: CurrentUserDep) -> StatusResponse:
+def get_status(
+    db: DbSession, engagement_id: EngagementDep, _user: CurrentUserDep
+) -> StatusResponse:
     """Return the overall pipeline-health snapshot.
 
     Reads ``sources`` (health + freshness) and ``cells`` / ``cell_triangulation``
     (coverage). No writes.
     """
-    sources: list[Source] = db.execute(select(Source)).scalars().all()
+    sources: list[Source] = (
+        db.execute(select(Source).where(Source.engagement_id == engagement_id))
+        .scalars()
+        .all()
+    )
 
     health = _build_health_summary(list(sources))
-    coverage = _build_coverage(db)
+    coverage = _build_coverage(db, engagement_id)
 
     # Most recent probe timestamp across sources that last came back OK.
     last_ok: datetime.datetime | None = db.scalar(
         select(func.max(Source.last_probe_at)).where(
-            Source.last_probe_status == "OK"
+            Source.last_probe_status == "OK",
+            Source.engagement_id == engagement_id,
         )
     )
 
@@ -320,6 +338,7 @@ def get_status(db: DbSession, _user: CurrentUserDep) -> StatusResponse:
 )
 def list_source_freshness(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     enabled_only: bool = False,
 ) -> list[SourceFreshnessItem]:
@@ -328,7 +347,7 @@ def list_source_freshness(
     Args:
         enabled_only: When True, suppress disabled sources from the response.
     """
-    q = select(Source)
+    q = select(Source).where(Source.engagement_id == engagement_id)
     if enabled_only:
         q = q.where(Source.enabled.is_(True))
     q = q.order_by(nullslast(Source.last_probe_at.desc()))
@@ -346,6 +365,8 @@ def list_source_freshness(
         "distribution. Isolates coverage from the full status snapshot."
     ),
 )
-def get_cell_coverage(db: DbSession, _user: CurrentUserDep) -> CellCoverageStats:
+def get_cell_coverage(
+    db: DbSession, engagement_id: EngagementDep, _user: CurrentUserDep
+) -> CellCoverageStats:
     """Return cell-coverage stats broken down by confidence band."""
-    return _build_coverage(db)
+    return _build_coverage(db, engagement_id)

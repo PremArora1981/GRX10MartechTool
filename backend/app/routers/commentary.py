@@ -47,7 +47,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend.app.deps import CurrentUserDep, DbSession, require_admin, require_role
+from backend.app.deps import (
+    CurrentUserDep,
+    DbSession,
+    EngagementDep,
+    require_admin,
+    require_role,
+)
 from backend.app.models import Commentary
 from backend.app.schemas import CommentaryOut, CurrentUser
 from backend.app.services.audience import (
@@ -142,15 +148,18 @@ class CommentaryList(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _require_commentary(commentary_id: int, session: Session) -> Commentary:
+def _require_commentary(
+    commentary_id: int, session: Session, engagement_id: str
+) -> Commentary:
     """Return the ``Commentary`` ORM row or raise HTTP 404.
 
     Does **not** apply audience filtering — callers must check visibility
     separately so that restricted rows return the same 404 as missing rows
-    (no information disclosure).
+    (no information disclosure).  Rows belonging to another engagement are
+    treated as not found.
     """
     row = session.get(Commentary, commentary_id)
-    if row is None:
+    if row is None or row.engagement_id != engagement_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Commentary {commentary_id} not found.",
@@ -211,6 +220,7 @@ def _check_external_permission(audience: str, user: CurrentUser) -> None:
 )
 def list_commentary(
     db: DbSession,
+    engagement_id: EngagementDep,
     user: CurrentUserDep,
     scope_type: Annotated[
         str | None,
@@ -276,8 +286,10 @@ def list_commentary(
     if scope_type is not None:
         _validate_scope_type(scope_type)
 
-    # Base filter: exclude the internal settings sentinel and apply audience gate.
+    # Base filter: scope to the active engagement, exclude the internal settings
+    # sentinel, and apply the audience gate.
     base_filters = [
+        Commentary.engagement_id == engagement_id,
         Commentary.scope_type != _SETTINGS_SCOPE,
         Commentary.audience.in_(list(effective_tags)),
     ]
@@ -341,6 +353,7 @@ def list_commentary(
 def create_commentary(
     body: CommentaryCreate,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: CurrentUserDep,
 ) -> CommentaryOut:
     """Create a new commentary row for the given scope.
@@ -364,6 +377,7 @@ def create_commentary(
     _check_external_permission(body.audience, user)
 
     row = Commentary(
+        engagement_id=engagement_id,
         scope_type=body.scope_type,
         scope_id=body.scope_id,
         body_markdown=body.body_markdown,
@@ -399,6 +413,7 @@ def create_commentary(
 def get_commentary(
     commentary_id: int,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: CurrentUserDep,
 ) -> CommentaryOut:
     """Return a single commentary row if it is visible to the current user.
@@ -409,7 +424,7 @@ def get_commentary(
 
     The internal ``_engagement_settings`` sentinel rows are never surfaced here.
     """
-    row = _require_commentary(commentary_id, db)
+    row = _require_commentary(commentary_id, db, engagement_id)
 
     # Block the internal settings namespace.
     if row.scope_type == _SETTINGS_SCOPE:
@@ -443,6 +458,7 @@ def update_commentary(
     commentary_id: int,
     body: CommentaryUpdate,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: CurrentUserDep,
 ) -> CommentaryOut:
     """Update ``body_markdown`` and/or ``audience`` on an existing commentary row.
@@ -469,7 +485,7 @@ def update_commentary(
             ),
         )
 
-    row = _require_commentary(commentary_id, db)
+    row = _require_commentary(commentary_id, db, engagement_id)
 
     # Block the internal settings namespace.
     if row.scope_type == _SETTINGS_SCOPE:
@@ -522,6 +538,7 @@ def update_commentary(
 def delete_commentary(
     commentary_id: int,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: Annotated[CurrentUser, Depends(require_admin)],
 ) -> None:
     """Hard-delete a commentary row.
@@ -536,7 +553,7 @@ def delete_commentary(
 
     Requires ``owner`` or ``admin`` role.
     """
-    row = _require_commentary(commentary_id, db)
+    row = _require_commentary(commentary_id, db, engagement_id)
 
     # Protect the internal settings namespace from deletion via the CRUD API.
     if row.scope_type == _SETTINGS_SCOPE:

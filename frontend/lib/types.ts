@@ -474,6 +474,64 @@ export interface BriefConnectorPlanItem {
   status: string;
   pulls: string;
   parsing: string;
+  base_url?: string;
+  endpoint_path?: string;
+  auth_type?: string;
+}
+
+/** One proposed subcategory (new-vertical taxonomy) from the brief. */
+export interface BriefProposedSubcategory {
+  family: string;
+  name: string;
+  hs_codes: string[];
+  regulatory_codes: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Engagements (multi-engagement)
+// ---------------------------------------------------------------------------
+
+export interface Engagement {
+  engagement_id: string;
+  name: string;
+  is_demo: boolean;
+  status: string; // active | archived
+  active_profile: string;
+  web_search_enabled: boolean;
+  brief_text: string | null;
+  created_at: string | null;
+}
+
+/** Request body to create an engagement from a confirmed brief plan. */
+export interface EngagementCreate {
+  name: string;
+  brief_text?: string | null;
+  families?: string[];
+  geographies?: string[];
+  year_from: number;
+  year_to: number;
+  /** The full confirmed BriefInterpretation (connector_plan, proposed_subcategories, …). */
+  plan?: Record<string, unknown> | null;
+}
+
+export interface EngagementCreateResult {
+  engagement_id: string;
+  name: string;
+  families: number;
+  subcategories: number;
+  geographies: number;
+  sources: number;
+  planned_cells: number;
+  capped: boolean;
+  web_search_enabled: boolean;
+}
+
+export interface EngagementPopulateResult {
+  engagement_id: string;
+  launched: boolean;
+  mode: string;
+  planned_cells: number;
+  detail: string;
 }
 
 /** One estimation method in the brief's execution blueprint. */
@@ -511,6 +569,7 @@ export interface BriefInterpretation {
   recommended_sources: BriefRecommendedSource[];
   interpretation_notes: string;
   taxonomy_status?: BriefTaxonomyStatus | null;
+  proposed_subcategories?: BriefProposedSubcategory[];
   connector_plan?: BriefConnectorPlanItem[];
   method_plan?: BriefMethodPlanItem[];
   execution_plan?: BriefExecutionStep[];

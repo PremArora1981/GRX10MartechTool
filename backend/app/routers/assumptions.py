@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend.app.deps import CurrentUserDep, DbSession, require_role
+from backend.app.deps import CurrentUserDep, DbSession, EngagementDep, require_role
 from backend.app.models import (
     Assumption,
     Cell,
@@ -84,14 +84,17 @@ def _scope_conditions(
     return conds
 
 
-def _require_assumption(assumption_id: int, session: Session) -> Assumption:
+def _require_assumption(
+    assumption_id: int, session: Session, engagement_id: str
+) -> Assumption:
     """Return the Assumption row or raise HTTP 404.
 
     Superseded assumptions remain accessible — this function never filters by
-    ``superseded_by``; the full version history is always readable.
+    ``superseded_by``; the full version history is always readable.  Rows
+    belonging to another engagement are treated as not found.
     """
     row = session.get(Assumption, assumption_id)
-    if row is None:
+    if row is None or row.engagement_id != engagement_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Assumption {assumption_id!r} not found.",
@@ -110,6 +113,7 @@ def _require_assumption(assumption_id: int, session: Session) -> Assumption:
 )
 def list_assumptions(
     session: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     active_only: Annotated[
         bool,
@@ -147,7 +151,7 @@ def list_assumptions(
     assumptions, omit all scope parameters and the result will include them (when
     ``active_only=false`` you get the full history including global ones).
     """
-    q = session.query(Assumption)
+    q = session.query(Assumption).filter(Assumption.engagement_id == engagement_id)
 
     if active_only:
         q = q.filter(Assumption.superseded_by.is_(None))
@@ -188,6 +192,7 @@ def list_assumptions(
 def create_assumption(
     body: AssumptionCreate,
     session: DbSession,
+    engagement_id: EngagementDep,
     user: CurrentUserDep,
 ) -> AssumptionOut:
     """Create a new assumption row and automatically wire ``superseded_by`` on the prior.
@@ -210,6 +215,7 @@ def create_assumption(
     Requires ``analyst``, ``admin``, or ``owner`` role.
     """
     new_row = Assumption(
+        engagement_id=engagement_id,
         scope_company_id=body.scope_company_id,
         scope_subcategory_id=body.scope_subcategory_id,
         scope_geography_id=body.scope_geography_id,
@@ -232,6 +238,7 @@ def create_assumption(
     prior: Assumption | None = (
         session.query(Assumption)
         .filter(
+            Assumption.engagement_id == engagement_id,
             *_scope_conditions(
                 body.scope_company_id,
                 body.scope_subcategory_id,
@@ -282,6 +289,7 @@ def create_assumption(
 def get_assumption(
     assumption_id: int,
     session: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> AssumptionOut:
     """Return a single assumption by primary key.
@@ -291,7 +299,7 @@ def get_assumption(
     ``superseded_by`` forward (newer) or use the list endpoint with
     ``active_only=false`` filtered by scope.
     """
-    row = _require_assumption(assumption_id, session)
+    row = _require_assumption(assumption_id, session, engagement_id)
     return AssumptionOut.model_validate(row)
 
 
@@ -303,6 +311,7 @@ def get_assumption(
 def list_influenced_cells(
     assumption_id: int,
     session: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     limit: Annotated[int, Query(ge=1, le=200, description="Page size (max 200).")] = 50,
     offset: Annotated[int, Query(ge=0, description="Zero-based row offset.")] = 0,
@@ -321,13 +330,16 @@ def list_influenced_cells(
     for a stable deterministic sort.
     """
     # Ensure the assumption exists — return 404 early rather than an empty list.
-    _require_assumption(assumption_id, session)
+    _require_assumption(assumption_id, session, engagement_id)
 
     # Count separately (avoids wrapping a multi-entity SELECT in a subquery
     # that may produce an ambiguous column count).
     total: int = (
         session.query(func.count(CellAssumptionLink.cell_id))
-        .filter(CellAssumptionLink.assumption_id == assumption_id)
+        .filter(
+            CellAssumptionLink.assumption_id == assumption_id,
+            CellAssumptionLink.engagement_id == engagement_id,
+        )
         .scalar()
         or 0
     )
@@ -340,7 +352,10 @@ def list_influenced_cells(
             Cell.subcategory_id == TaxonomySubcategory.subcategory_id,
         )
         .join(Geography, Cell.geography_id == Geography.geography_id)
-        .filter(CellAssumptionLink.assumption_id == assumption_id)
+        .filter(
+            CellAssumptionLink.assumption_id == assumption_id,
+            CellAssumptionLink.engagement_id == engagement_id,
+        )
         .order_by(Cell.year.desc(), Cell.cell_id)
         .offset(offset)
         .limit(limit)

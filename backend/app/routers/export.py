@@ -38,7 +38,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from backend.app.deps import CurrentUserDep, DbSession
+from backend.app.deps import CurrentUserDep, DbSession, EngagementDep
 from backend.app.services.export_xlsx import ExportFlavor, build_workbook, workbook_to_bytes
 
 logger = logging.getLogger("grx10.routers.export")
@@ -85,6 +85,7 @@ _MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 def export_xlsx(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     flavor: Annotated[
         str,
@@ -173,15 +174,16 @@ def export_xlsx(
     # --- Build workbook ----------------------------------------------------- #
     logger.info(
         "export_xlsx flavor=%s cell_id=%s subcategory_id=%s geography_id=%s "
-        "year=%s confidence=%s user=%s",
+        "year=%s confidence=%s engagement_id=%s user=%s",
         flavor, cell_id, subcategory_id, geography_id, year, confidence,
-        _user.id,
+        engagement_id, _user.id,
     )
 
     try:
         wb = build_workbook(
             flavor,  # type: ignore[arg-type]
             db,
+            engagement_id=engagement_id,
             cell_id=cell_id,
             subcategory_id=subcategory_id,
             geography_id=geography_id,

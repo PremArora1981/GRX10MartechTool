@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { api, ApiError } from "@/lib/api";
 import { formatUsdMillions } from "@/lib/format";
 import type { StatsOverview } from "@/lib/api";
+import type { Engagement } from "@/lib/types";
 import DashboardCharts from "./_components/DashboardCharts";
 
 export const dynamic = "force-dynamic";
@@ -19,10 +20,14 @@ export const dynamic = "force-dynamic";
  */
 export default async function DashboardPage() {
   let overview: StatsOverview | null = null;
+  let engagement: Engagement | null = null;
   let apiError: string | null = null;
 
   try {
-    overview = await api.getStatsOverview(2026);
+    [overview, engagement] = await Promise.all([
+      api.getStatsOverview(),          // backend picks the engagement's latest year
+      api.currentEngagement().catch(() => null),
+    ]);
   } catch (err) {
     apiError =
       err instanceof ApiError
@@ -31,13 +36,21 @@ export default async function DashboardPage() {
   }
 
   const cb = overview?.confidence_breakdown;
+  const year = overview?.year ?? new Date().getFullYear();
+  const engName = engagement?.name ?? "Market Research";
+  const nGeos = overview?.by_geography?.length ?? 0;
+  const nCells = overview?.cell_count ?? 0;
 
   return (
     <>
       <PageHeader
-        eyebrow="Overview · 2026"
-        title="Medtech APAC — Market Research Dashboard"
-        description="198 market cells across 33 subcategories × 3 geographies × 2 model years. Every number drillable to a source URL."
+        eyebrow={`Overview · ${year}`}
+        title={`${engName} — Market Research Dashboard`}
+        description={
+          nCells > 0
+            ? `${nCells.toLocaleString()} market cells for ${year} across ${nGeos} ${nGeos === 1 ? "geography" : "geographies"}. Every number drillable to a source URL.`
+            : "No sized cells yet for this engagement — run the pipeline or web-search populate to fill the model."
+        }
       />
 
       {apiError && (
@@ -53,14 +66,14 @@ export default async function DashboardPage() {
         className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5"
       >
         <StatCard
-          label="Total TAM 2026"
+          label={`Total TAM ${year}`}
           value={overview ? formatUsdMillions(overview.total_tam_usd_m) : "—"}
-          sub="across 3 geographies"
+          sub={`across ${nGeos} ${nGeos === 1 ? "geography" : "geographies"}`}
         />
         <StatCard
           label="Market cells"
           value={overview ? overview.cell_count.toLocaleString() : "—"}
-          sub="33 subcategories × 3 geos"
+          sub={`${year} model year`}
           href="/cells"
         />
         <StatCard

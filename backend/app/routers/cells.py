@@ -31,7 +31,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.orm import Session, joinedload
 
-from backend.app.deps import CurrentUserDep, DbSession
+from backend.app.deps import CurrentUserDep, DbSession, EngagementDep
 from backend.app.models import (
     Cell,
     CellTriangulation,
@@ -133,7 +133,9 @@ def _raw_match_filters(model, raw_table: str, cell: Cell | None) -> list:
     return filters
 
 
-def _resolve_raw_ref(db: Session, source: Source, cell: Cell | None = None) -> RawRef:
+def _resolve_raw_ref(
+    db: Session, source: Source, engagement_id: str, cell: Cell | None = None
+) -> RawRef:
     """Return a :class:`RawRef` pointing to the raw evidence row for *source*.
 
     Looks up ``source.raw_table`` in :data:`RAW_TABLE_MODELS` and matches the
@@ -160,7 +162,11 @@ def _resolve_raw_ref(db: Session, source: Source, cell: Cell | None = None) -> R
             row = (
                 db.execute(
                     select(model)
-                    .where(model.source_id == source.source_id, *cell_filters)  # type: ignore[attr-defined]
+                    .where(
+                        model.source_id == source.source_id,  # type: ignore[attr-defined]
+                        model.engagement_id == engagement_id,  # type: ignore[attr-defined]
+                        *cell_filters,
+                    )
                     .order_by(nullslast(model.accessed_at.desc()))  # type: ignore[attr-defined]
                     .limit(1)
                 )
@@ -171,7 +177,10 @@ def _resolve_raw_ref(db: Session, source: Source, cell: Cell | None = None) -> R
             row = (
                 db.execute(
                     select(model)
-                    .where(model.source_id == source.source_id)  # type: ignore[attr-defined]
+                    .where(
+                        model.source_id == source.source_id,  # type: ignore[attr-defined]
+                        model.engagement_id == engagement_id,  # type: ignore[attr-defined]
+                    )
                     .order_by(nullslast(model.accessed_at.desc()))  # type: ignore[attr-defined]
                     .limit(1)
                 )
@@ -201,7 +210,7 @@ def _resolve_raw_ref(db: Session, source: Source, cell: Cell | None = None) -> R
 
 
 def _build_estimate(
-    tri: CellTriangulation, db: Session, cell: Cell | None = None
+    tri: CellTriangulation, db: Session, engagement_id: str, cell: Cell | None = None
 ) -> EstimateOut:
     """Build a fully-enriched :class:`EstimateOut` from a triangulation row.
 
@@ -219,7 +228,7 @@ def _build_estimate(
         SourceOut.model_validate(tri.source) if tri.source else None
     )
     raw_ref: RawRef | None = (
-        _resolve_raw_ref(db, tri.source, cell) if tri.source else None
+        _resolve_raw_ref(db, tri.source, engagement_id, cell) if tri.source else None
     )
 
     return EstimateOut(
@@ -253,6 +262,7 @@ def _build_estimate(
 )
 def list_cells(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     subcategory_id: Annotated[
         int | None,
@@ -293,8 +303,9 @@ def list_cells(
             detail=f"confidence must be one of: {sorted(_CONFIDENCE_VALUES)}",
         )
 
-    # Build the shared WHERE predicate list.
-    filters = []
+    # Build the shared WHERE predicate list. Always scoped to the active
+    # engagement so the Cell Explorer never lists another engagement's cells.
+    filters = [Cell.engagement_id == engagement_id]
     if subcategory_id is not None:
         filters.append(Cell.subcategory_id == subcategory_id)
     if geography_id is not None:
@@ -346,6 +357,7 @@ def list_cells(
 def get_cell(
     cell_id: int,
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> CellDetail:
     """Return the complete drill chain for one cell.
@@ -373,7 +385,7 @@ def get_cell(
             joinedload(Cell.triangulations).joinedload(CellTriangulation.method),
             joinedload(Cell.triangulations).joinedload(CellTriangulation.source),
         )
-        .where(Cell.cell_id == cell_id)
+        .where(Cell.cell_id == cell_id, Cell.engagement_id == engagement_id)
     )
     cell = db.execute(stmt).unique().scalars().first()
     if cell is None:
@@ -385,11 +397,17 @@ def get_cell(
     # Build enriched EstimateOut rows (one per triangulation row).
     # _build_estimate issues one cheap indexed query per unique source to locate
     # the latest raw row; with typically 2-5 estimates per cell this is fast.
-    estimates = [_build_estimate(tri, db, cell) for tri in cell.triangulations]
+    estimates = [_build_estimate(tri, db, engagement_id, cell) for tri in cell.triangulations]
 
     # Triangulation summary from the materialised view (may be absent if the
-    # pipeline refresh hasn't run yet or the cell has no estimates).
-    summary_row = db.get(CellTriangulationSummary, cell_id)
+    # pipeline refresh hasn't run yet or the cell has no estimates). Scoped to
+    # the active engagement so a cell_id can't pull another engagement's summary.
+    summary_row = db.execute(
+        select(CellTriangulationSummary).where(
+            CellTriangulationSummary.cell_id == cell_id,
+            CellTriangulationSummary.engagement_id == engagement_id,
+        )
+    ).scalars().first()
     summary: TriangulationSummaryOut | None = (
         TriangulationSummaryOut.model_validate(summary_row) if summary_row else None
     )
@@ -434,6 +452,7 @@ def get_cell(
 def get_cell_triangulation(
     cell_id: int,
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> list[dict]:
     """Return one estimate per ``cell_triangulation`` row, FLATTENED.
@@ -449,7 +468,7 @@ def get_cell_triangulation(
             joinedload(Cell.triangulations).joinedload(CellTriangulation.method),
             joinedload(Cell.triangulations).joinedload(CellTriangulation.source),
         )
-        .where(Cell.cell_id == cell_id)
+        .where(Cell.cell_id == cell_id, Cell.engagement_id == engagement_id)
     )
     cell = db.execute(stmt).unique().scalars().first()
     if cell is None:
@@ -459,7 +478,7 @@ def get_cell_triangulation(
         )
     out: list[dict] = []
     for tri in cell.triangulations:
-        est = _build_estimate(tri, db, cell)  # EstimateOut with nested method/source
+        est = _build_estimate(tri, db, engagement_id, cell)  # EstimateOut with nested method/source
         m, s = est.method, est.source
         out.append({
             "triangulation_id": est.triangulation_id,
@@ -491,6 +510,7 @@ def get_triangulation_raw(
     cell_id: int,
     triangulation_id: int,
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> dict:
     """Return the verbatim ``raw_*.raw_json`` record that fed one estimate.
@@ -508,7 +528,10 @@ def get_triangulation_raw(
                 joinedload(CellTriangulation.source),
                 joinedload(CellTriangulation.method),
             )
-            .where(CellTriangulation.triangulation_id == triangulation_id)
+            .where(
+                CellTriangulation.triangulation_id == triangulation_id,
+                CellTriangulation.engagement_id == engagement_id,
+            )
         )
         .unique()
         .scalars()
@@ -528,10 +551,10 @@ def get_triangulation_raw(
     cell = db.execute(
         select(Cell)
         .options(joinedload(Cell.subcategory), joinedload(Cell.geography))
-        .where(Cell.cell_id == cell_id)
+        .where(Cell.cell_id == cell_id, Cell.engagement_id == engagement_id)
     ).unique().scalars().first()
 
-    raw_ref = _resolve_raw_ref(db, tri.source, cell)
+    raw_ref = _resolve_raw_ref(db, tri.source, engagement_id, cell)
     if raw_ref.raw_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -567,6 +590,7 @@ def get_triangulation_raw(
 def get_triangulation_summary(
     cell_id: int,
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> TriangulationSummaryOut:
     """Return confidence math for one cell from the ``cell_triangulation_summary`` view.
@@ -586,13 +610,21 @@ def get_triangulation_summary(
     has not been refreshed). The parent ``GET /api/cells/{id}`` endpoint indicates
     the same state via ``summary: null``.
     """
-    # Fast primary-key lookup on the unique index of the materialised view.
-    row = db.get(CellTriangulationSummary, cell_id)
+    # Fast lookup on the view, scoped to the active engagement so a cell_id from
+    # another engagement can't return its summary.
+    row = db.execute(
+        select(CellTriangulationSummary).where(
+            CellTriangulationSummary.cell_id == cell_id,
+            CellTriangulationSummary.engagement_id == engagement_id,
+        )
+    ).scalars().first()
     if row is None:
         # Distinguish "cell genuinely missing" from "no estimates yet" with one
         # extra lightweight check.
         cell_exists = db.execute(
-            select(func.count()).select_from(Cell).where(Cell.cell_id == cell_id)
+            select(func.count())
+            .select_from(Cell)
+            .where(Cell.cell_id == cell_id, Cell.engagement_id == engagement_id)
         ).scalar_one()
         if not cell_exists:
             raise HTTPException(

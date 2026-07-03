@@ -22,7 +22,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from sqlalchemy import func, nullslast, select
 
-from backend.app.deps import DbSession
+from backend.app.deps import DbSession, EngagementDep
 from backend.app.models import Cell, Geography, TaxonomyFamily, TaxonomySubcategory
 
 logger = logging.getLogger("grx10.routers.stats")
@@ -77,7 +77,11 @@ class OverviewResponse(BaseModel):
 @router.get("/overview", response_model=OverviewResponse)
 def get_overview(
     db: DbSession,
-    year: Annotated[int, Query(description="Model year (default 2026)")] = 2026,
+    engagement_id: EngagementDep,
+    year: Annotated[
+        int | None,
+        Query(description="Model year; defaults to the engagement's latest year with cells."),
+    ] = None,
 ) -> OverviewResponse:
     """Aggregated headline figures for the dashboard landing.
 
@@ -86,7 +90,17 @@ def get_overview(
     NUMERIC columns arrive as ``Decimal`` objects; they are coerced to ``float``
     before serialisation so the JSON payload carries plain numbers, not strings
     (GOTCHA #1 from project docs).
+
+    When ``year`` is omitted it resolves to the engagement's most recent modelled
+    year (so a new engagement whose anchor years aren't 2026 still shows data).
     """
+    if year is None:
+        # The near anchor year (MIN) is the base year the dashboard opens on:
+        # preserves Medtech's 2026 headline and opens a new engagement on its
+        # first modelled year rather than the far-forecast one.
+        year = db.execute(
+            select(func.min(Cell.year)).where(Cell.engagement_id == engagement_id)
+        ).scalar_one_or_none() or 2026
     # -- Per-confidence counts + TAM (one pass) --------------------------------
     conf_stmt = (
         select(
@@ -94,7 +108,7 @@ def get_overview(
             func.count(Cell.cell_id).label("cnt"),
             func.coalesce(func.sum(Cell.tam_revenue_usd_m), 0).label("tam"),
         )
-        .where(Cell.year == year)
+        .where(Cell.year == year, Cell.engagement_id == engagement_id)
         .group_by(Cell.confidence)
     )
     conf_rows = db.execute(conf_stmt).all()
@@ -128,7 +142,7 @@ def get_overview(
             TaxonomyFamily,
             TaxonomySubcategory.family_id == TaxonomyFamily.family_id,
         )
-        .where(Cell.year == year)
+        .where(Cell.year == year, Cell.engagement_id == engagement_id)
         .group_by(TaxonomyFamily.name)
         .order_by(nullslast(func.sum(Cell.tam_revenue_usd_m).desc()))
     )
@@ -149,7 +163,7 @@ def get_overview(
             func.coalesce(func.sum(Cell.tam_revenue_usd_m), 0).label("tam"),
         )
         .join(Geography, Cell.geography_id == Geography.geography_id)
-        .where(Cell.year == year)
+        .where(Cell.year == year, Cell.engagement_id == engagement_id)
         .group_by(Geography.country)
         .order_by(nullslast(func.sum(Cell.tam_revenue_usd_m).desc()))
     )

@@ -346,6 +346,38 @@ class CommentaryOut(_ORMModel):
 
 
 # --------------------------------------------------------------------------- #
+# Engagements (multi-engagement workspace)
+# --------------------------------------------------------------------------- #
+class EngagementOut(_ORMModel):
+    """Public view of a row from the ``engagements`` table."""
+
+    engagement_id: str
+    name: str
+    is_demo: bool
+    status: str  # active | archived
+    active_profile: str
+    web_search_enabled: bool
+    brief_text: str | None = None
+    created_at: datetime.datetime | None = None
+
+
+class EngagementCreate(BaseModel):
+    """Request body for creating an engagement from a confirmed brief plan.
+
+    ``plan`` is intentionally permissive so it can carry the full confirmed
+    connector/method/subcategory plan without a rigid schema.
+    """
+
+    name: str
+    brief_text: str | None = None
+    families: list[str] = Field(default_factory=list)
+    geographies: list[str] = Field(default_factory=list)
+    year_from: int
+    year_to: int
+    plan: dict[str, Any] | None = None
+
+
+# --------------------------------------------------------------------------- #
 # Auth (current user) — shape shared with the auth service (deps.py)
 # --------------------------------------------------------------------------- #
 Role = Literal["owner", "admin", "analyst", "business", "external"]
@@ -380,6 +412,8 @@ __all__ = [
     "AssumptionCreate", "AssumptionOut", "AssumptionList", "AssumptionInfluencedCells",
     # commentary
     "CommentaryOut",
+    # engagements
+    "EngagementOut", "EngagementCreate",
     # auth
     "CurrentUser",
 ]

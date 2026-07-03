@@ -49,10 +49,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
-from backend.app.deps import CurrentUserDep, DbSession, require_admin
+from backend.app.deps import CurrentUserDep, DbSession, EngagementDep, require_admin
 from backend.app.models import Commentary, Source, ValidationProfile
 from backend.app.schemas import CurrentUser
 
@@ -181,15 +181,18 @@ class AudienceSetIn(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _load_engagement_settings(db: Session) -> dict:
+def _load_engagement_settings(db: Session, engagement_id: str) -> dict:
     """Read the engagement-settings JSON from the commentary carrier row.
 
     Returns an empty dict when no settings row exists yet; callers apply
-    their own defaults.
+    their own defaults.  Scoped to the active engagement.
     """
     row: Commentary | None = db.scalar(
         select(Commentary)
-        .where(Commentary.scope_type == _SETTINGS_SCOPE)
+        .where(
+            Commentary.scope_type == _SETTINGS_SCOPE,
+            Commentary.engagement_id == engagement_id,
+        )
         .order_by(Commentary.created_at.desc())
         .limit(1)
     )
@@ -204,7 +207,9 @@ def _load_engagement_settings(db: Session) -> dict:
         return {}
 
 
-def _save_engagement_settings(db: Session, settings: dict, actor: str) -> None:
+def _save_engagement_settings(
+    db: Session, settings: dict, actor: str, engagement_id: str
+) -> None:
     """Upsert the engagement-settings commentary carrier row.
 
     The ``commentary`` table has no unique constraint on ``(scope_type, scope_id)``
@@ -218,7 +223,10 @@ def _save_engagement_settings(db: Session, settings: dict, actor: str) -> None:
     """
     existing: Commentary | None = db.scalar(
         select(Commentary)
-        .where(Commentary.scope_type == _SETTINGS_SCOPE)
+        .where(
+            Commentary.scope_type == _SETTINGS_SCOPE,
+            Commentary.engagement_id == engagement_id,
+        )
         .order_by(Commentary.created_at.desc())
         .limit(1)
     )
@@ -229,6 +237,7 @@ def _save_engagement_settings(db: Session, settings: dict, actor: str) -> None:
     else:
         db.add(
             Commentary(
+                engagement_id=engagement_id,
                 scope_type=_SETTINGS_SCOPE,
                 scope_id=None,
                 body_markdown=body,
@@ -239,12 +248,15 @@ def _save_engagement_settings(db: Session, settings: dict, actor: str) -> None:
         )
 
 
-def _count_web_search_sources(db: Session) -> int:
-    """Count sources registered with ``access_method='web_search'``."""
+def _count_web_search_sources(db: Session, engagement_id: str) -> int:
+    """Count sources registered with ``access_method='web_search'`` (engagement-scoped)."""
     return db.scalar(
         select(func.count())
         .select_from(Source)
-        .where(Source.access_method == "web_search")
+        .where(
+            Source.access_method == "web_search",
+            Source.engagement_id == engagement_id,
+        )
     ) or 0
 
 
@@ -283,19 +295,30 @@ def list_profiles(
 )
 def get_active_profile(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> ValidationProfileOut:
-    """Return the single currently-active validation profile.
+    """Return the validation profile active for this engagement.
 
-    Raises 404 if no profile is active (e.g. before the config loader has run).
+    The active profile name lives on the engagement row (``engagements.active_profile``);
+    the full threshold set is looked up from the global ``validation_profiles`` table
+    by name.  Raises 404 if the engagement has no active profile set or the named
+    profile no longer exists.
     The ``cell_triangulation_summary`` view reads this profile; if it is absent,
     confidence cannot be computed.
     """
-    row: ValidationProfile | None = db.scalar(
-        select(ValidationProfile)
-        .where(ValidationProfile.is_active.is_(True))
-        .limit(1)
-    )
+    active_name: str | None = db.execute(
+        text("SELECT active_profile FROM engagements WHERE engagement_id = :eng"),
+        {"eng": engagement_id},
+    ).scalar_one_or_none()
+
+    row: ValidationProfile | None = None
+    if active_name is not None:
+        row = db.scalar(
+            select(ValidationProfile)
+            .where(ValidationProfile.name == active_name)
+            .limit(1)
+        )
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -315,14 +338,16 @@ def get_active_profile(
 def activate_profile(
     profile_id: int,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: Annotated[CurrentUser, Depends(require_admin)],
 ) -> ValidationProfileOut:
-    """Flip ``is_active`` so exactly one profile is active at any moment.
+    """Set this engagement's active validation profile by name.
 
-    The two-step UPDATE (clear all → set one) runs inside the request-scoped
-    session transaction, which commits on a clean response return.  This means
-    ``cell_triangulation_summary`` never reads the DB during a moment when zero
-    or two profiles are marked active.
+    The active profile is now per-engagement (``engagements.active_profile``),
+    not a global ``validation_profiles.is_active`` flag.  We resolve the target
+    profile by ``profile_id`` (validating it exists in the global registry), then
+    record its ``name`` on the engagement row.  This runs inside the request-scoped
+    session transaction, which commits on a clean response return.
 
     Because ``cell_triangulation_summary`` is a materialized view, callers
     should trigger ``REFRESH MATERIALIZED VIEW cell_triangulation_summary``
@@ -340,18 +365,22 @@ def activate_profile(
             detail=f"Validation profile {profile_id} not found.",
         )
 
-    # Step 1 — clear all active flags.
-    db.execute(update(ValidationProfile).values(is_active=False))
-
-    # Step 2 — set the target.
-    target.is_active = True
+    # Record the active profile name on the engagement row (per-engagement setting).
+    db.execute(
+        text(
+            "UPDATE engagements SET active_profile = :name WHERE engagement_id = :eng"
+        ),
+        {"name": target.name, "eng": engagement_id},
+    )
     db.flush()  # materialise within the transaction before the response body builds
 
     logger.info(
-        "user=%s activated validation_profile profile_id=%d name='%s'",
+        "user=%s activated validation_profile profile_id=%d name='%s' "
+        "for engagement=%s",
         user.id,
         profile_id,
         target.name,
+        engagement_id,
     )
     return ValidationProfileOut.model_validate(target)
 
@@ -464,18 +493,22 @@ def clone_profile(
 )
 def get_web_search_state(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> WebSearchState:
     """Return whether the web-search fallback is enabled for this engagement (Q8).
 
-    Default is ``enabled=True`` (on by default per the spec).  The toggle is
-    persisted in the engagement-settings commentary row; this endpoint reads it.
+    Default is ``enabled=True`` (on by default per the spec).  The toggle now lives
+    on the engagement row (``engagements.web_search_enabled``); this endpoint reads it.
     """
-    cfg = _load_engagement_settings(db)
-    enabled: bool = bool(cfg.get("web_search_enabled", True))
+    enabled_raw = db.execute(
+        text("SELECT web_search_enabled FROM engagements WHERE engagement_id = :eng"),
+        {"eng": engagement_id},
+    ).scalar_one_or_none()
+    enabled: bool = True if enabled_raw is None else bool(enabled_raw)
     return WebSearchState(
         enabled=enabled,
-        web_search_source_count=_count_web_search_sources(db),
+        web_search_source_count=_count_web_search_sources(db, engagement_id),
     )
 
 
@@ -487,14 +520,16 @@ def get_web_search_state(
 def set_web_search_state(
     body: WebSearchToggleIn,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: Annotated[CurrentUser, Depends(require_admin)],
 ) -> WebSearchState:
     """Enable or disable the web-search fallback for this engagement (Q8).
 
     Two effects:
 
-    1. **Persists** the toggle in the ``_engagement_settings`` commentary row
-       so the pipeline and status page read the same value.
+    1. **Persists** the toggle on the engagement row
+       (``engagements.web_search_enabled``) so the pipeline and status page read
+       the same value.
 
     2. **Syncs** ``sources.enabled`` for every source with
        ``access_method='web_search'`` so the pipeline's pre-flight
@@ -507,19 +542,26 @@ def set_web_search_state(
 
     Requires ``owner`` or ``admin`` role.
     """
-    cfg = _load_engagement_settings(db)
-    cfg["web_search_enabled"] = body.enabled
-    _save_engagement_settings(db, cfg, actor=user.id)
+    db.execute(
+        text(
+            "UPDATE engagements SET web_search_enabled = :val "
+            "WHERE engagement_id = :eng"
+        ),
+        {"val": body.enabled, "eng": engagement_id},
+    )
 
-    # Sync the enabled flag on all web_search sources.
+    # Sync the enabled flag on all web_search sources for this engagement.
     db.execute(
         update(Source)
-        .where(Source.access_method == "web_search")
+        .where(
+            Source.access_method == "web_search",
+            Source.engagement_id == engagement_id,
+        )
         .values(enabled=body.enabled)
     )
     db.flush()
 
-    ws_count = _count_web_search_sources(db)
+    ws_count = _count_web_search_sources(db, engagement_id)
     logger.info(
         "user=%s set web_search_enabled=%s (synced %d sources)",
         user.id,
@@ -541,6 +583,7 @@ def set_web_search_state(
 )
 def get_audience(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> AudienceState:
     """Return the current default audience for content filtering (Q10).
@@ -549,7 +592,7 @@ def get_audience(
     in the Cell Detail, Players, and Assumptions screens.  Any authenticated user
     can read it; setting it requires admin.
     """
-    cfg = _load_engagement_settings(db)
+    cfg = _load_engagement_settings(db, engagement_id)
     return AudienceState(audience=cfg.get("audience", "all"))
 
 
@@ -561,6 +604,7 @@ def get_audience(
 def set_audience(
     body: AudienceSetIn,
     db: DbSession,
+    engagement_id: EngagementDep,
     user: Annotated[CurrentUser, Depends(require_admin)],
 ) -> AudienceState:
     """Set the default audience for content filtering (admin only, Q10).
@@ -583,9 +627,9 @@ def set_audience(
             ),
         )
 
-    cfg = _load_engagement_settings(db)
+    cfg = _load_engagement_settings(db, engagement_id)
     cfg["audience"] = body.audience
-    _save_engagement_settings(db, cfg, actor=user.id)
+    _save_engagement_settings(db, cfg, actor=user.id, engagement_id=engagement_id)
     db.flush()
 
     logger.info("user=%s set default audience='%s'", user.id, body.audience)

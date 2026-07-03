@@ -29,7 +29,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.app.deps import CurrentUserDep, DbSession
+from backend.app.deps import CurrentUserDep, DbSession, EngagementDep
 from backend.app.services import reports_pdf
 
 logger = logging.getLogger("grx10.routers.reports")
@@ -143,6 +143,7 @@ def generate_standard_report(
     report_type: str,
     body: ReportParams,
     request: Request,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> ReportResult:
     """Return a download link for one of the three standard reports."""
@@ -152,10 +153,14 @@ def generate_standard_report(
             detail=f"Unknown report type {report_type!r}. "
             f"Valid: {', '.join(_STANDARD_BUILDERS)}.",
         )
+    # Carry the active engagement in the query string so the browser navigation to
+    # the download endpoint (which cannot send the X-Engagement-Id header) stays
+    # scoped to this engagement.
     download_url = _abs(
         request,
         f"reports/{report_type}/download",
         {
+            "engagement_id": engagement_id,
             "year": body.year,
             "subcategory_ids": ",".join(map(str, body.subcategory_ids)) if body.subcategory_ids else None,
             "geography_ids": ",".join(map(str, body.geography_ids)) if body.geography_ids else None,
@@ -175,6 +180,7 @@ def generate_standard_report(
 def download_standard_report(
     report_type: str,
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     year: int | None = Query(None),
     subcategory_ids: str | None = Query(None),
@@ -188,6 +194,7 @@ def download_standard_report(
     try:
         buf = builder(
             db,
+            engagement_id=engagement_id,
             subcategory_ids=_ids(subcategory_ids),
             geography_ids=_ids(geography_ids),
             year=year,
@@ -210,6 +217,7 @@ def download_standard_report(
 def generate_custom_report(
     body: CustomReportParams,
     request: Request,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> ReportResult:
     """Return a download link for a custom (cart-assembled) report."""
@@ -218,10 +226,13 @@ def generate_custom_report(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="At least one section is required for a custom report.",
         )
+    # Carry the active engagement in the query string so the browser download
+    # navigation stays scoped (no X-Engagement-Id header on a plain GET).
     download_url = _abs(
         request,
         "reports/custom/download",
         {
+            "engagement_id": engagement_id,
             "sections": ",".join(body.sections),
             "year": body.year,
             "subcategory_ids": ",".join(map(str, body.subcategory_ids)) if body.subcategory_ids else None,
@@ -240,6 +251,7 @@ def generate_custom_report(
 @router.get("/reports/custom/download", response_class=StreamingResponse)
 def download_custom_report(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     sections: str = Query(..., description="Comma-separated section names"),
     year: int | None = Query(None),
@@ -252,6 +264,7 @@ def download_custom_report(
     try:
         buf = reports_pdf.build_custom(
             db,
+            engagement_id=engagement_id,
             sections=section_list,
             subcategory_ids=_ids(subcategory_ids),
             geography_ids=_ids(geography_ids),
@@ -276,6 +289,7 @@ def generate_excel_export(
     flavor: str,
     body: ReportParams,
     request: Request,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> ReportResult:
     """Return a download link to the streaming XLSX endpoint for *flavor*."""
@@ -286,10 +300,13 @@ def generate_excel_export(
             detail=f"Unknown Excel flavor {flavor!r}. "
             f"Valid: {', '.join(_EXCEL_FLAVOR_MAP)}.",
         )
+    # Carry the active engagement in the query string so the browser download
+    # navigation to the XLSX endpoint stays scoped (no X-Engagement-Id header).
     download_url = _abs(
         request,
         "export/xlsx",
         {
+            "engagement_id": engagement_id,
             "flavor": backend_flavor,
             "year": body.year,
             "subcategory_id": body.subcategory_ids[0] if body.subcategory_ids else None,

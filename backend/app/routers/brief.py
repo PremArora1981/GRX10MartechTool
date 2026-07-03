@@ -65,6 +65,9 @@ class ConnectorPlanItem(BaseModel):
     status: str                      # e.g. "connected" / "catalog — needs credential"
     pulls: str                       # what this connector will pull for THIS brief
     parsing: str                     # how payloads are parsed into the raw layer
+    base_url: str = ""               # e.g. "https://api.anac.gov.br"
+    endpoint_path: str = ""          # e.g. "/v1/drones"
+    auth_type: str = ""              # "none" | "api_key" | "subscription" | ""
 
 
 class MethodPlanItem(BaseModel):
@@ -89,6 +92,13 @@ class TaxonomyStatus(BaseModel):
     note: str = ""
 
 
+class ProposedSubcategory(BaseModel):
+    family: str            # the family name this subcategory belongs to
+    name: str
+    hs_codes: list[str] = Field(default_factory=list)
+    regulatory_codes: list[str] = Field(default_factory=list)
+
+
 class BriefInterpretation(BaseModel):
     families: list[str]
     geographies: list[str]
@@ -98,6 +108,7 @@ class BriefInterpretation(BaseModel):
     interpretation_notes: str
     # Execution blueprint (how the platform will actually build the model)
     taxonomy_status: TaxonomyStatus | None = None
+    proposed_subcategories: list[ProposedSubcategory] = Field(default_factory=list)
     connector_plan: list[ConnectorPlanItem] = Field(default_factory=list)
     method_plan: list[MethodPlanItem] = Field(default_factory=list)
     execution_plan: list[ExecutionStep] = Field(default_factory=list)
@@ -711,8 +722,9 @@ def _call_anthropic(
         '  "years": {"from": <int>, "to": <int>},\n'
         '  "constraints": ["<verbatim exclude/focus clauses>"],\n'
         '  "taxonomy_status": {"in_catalog": <bool>, "proposed_families": ["<4-8 names ONLY if in_catalog=false>"], "note": "<1-2 sentences>"},\n'
+        '  "proposed_subcategories": [{"family":"<one of proposed_families>","name":"<subcategory>","hs_codes":["<6-digit HS>"],"regulatory_codes":["<code>"]}],\n'
         '  "source_ids": ["<EXACT catalog source_id to engage, when in_catalog>"],\n'
-        '  "proposed_connectors": [{"publisher":"<name>","source_class":"<A|B|C>","raw_table":"<one of the raw_* tables>","access":"<e.g. REST API — key required>","pulls":"<one line: what it pulls for this brief>"}],\n'
+        '  "proposed_connectors": [{"publisher":"<name>","source_class":"<A|B|C>","raw_table":"<one of the raw_* tables>","access":"<e.g. REST API — key required>","base_url":"<https://api.host.gov>","path":"<e.g. /v1/resource>","auth":"<none|api_key|subscription>","pulls":"<one line: what it pulls for this brief>"}],\n'
         '  "method_codes": ["<EXACT method_code to run>"],\n'
         '  "interpretation_notes": "<1-2 sentences on ambiguous choices>"\n'
         "}\n\n"
@@ -720,11 +732,17 @@ def _call_anthropic(
         "- families: EXACT catalog names only. If the brief targets a vertical NOT in the "
         "taxonomy, set families=[], taxonomy_status.in_catalog=false, propose 4-8 new families, "
         "and populate proposed_connectors (8-12) with plausible authorities for that vertical "
-        "(trade/customs, regulators, filings, industry reports, macro metrics, news). NEVER "
-        "force-map an unrelated vertical onto the medtech taxonomy.\n"
+        "(trade/customs, regulators, filings, industry reports, macro metrics, news). Each "
+        "proposed_connector MUST include base_url, path and auth (none|api_key|subscription) so a "
+        "generic-REST connector can attempt a pull. NEVER force-map an unrelated vertical onto the "
+        "medtech taxonomy.\n"
+        "- When in_catalog=false, also fill proposed_subcategories: for EACH proposed family give "
+        "2-4 subcategories, each with best-guess hs_codes (6-digit ok) and any regulatory_codes. "
+        "When in_catalog=true leave proposed_subcategories=[] (subcategories already exist in the "
+        "catalog).\n"
         "- When in_catalog=true, fill source_ids (8-14 EXACT ids) covering trade flows, filings, "
         "regulatory, industry reports and external metrics so tier-A methods can triangulate; "
-        "leave proposed_connectors empty.\n"
+        "leave proposed_connectors and proposed_subcategories empty.\n"
         "- source_ids: prefer class-A, already-connected sources. Do NOT include a country-bound "
         "source for a geography not in scope.\n"
         "- method_codes: every method whose raw tables your sources cover.\n"
@@ -741,9 +759,10 @@ def _call_anthropic(
         },
         json={
             "model": "claude-sonnet-4-6",
-            # Headroom for the new-vertical case (proposed families + 8-12
-            # proposed connectors); the in-catalog case uses far less.
-            "max_tokens": 3000,
+            # Headroom for the new-vertical case (proposed families + 2-4
+            # subcategories each with HS/regulatory codes + 8-12 proposed
+            # connectors with endpoints); the in-catalog case uses far less.
+            "max_tokens": 3500,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=60.0,
@@ -788,6 +807,8 @@ def _call_anthropic(
         ))
 
     # New vertical: the LLM proposes connectors that don't exist in the catalog yet.
+    # Each carries a candidate REST endpoint (base_url + path + auth) so a generic
+    # REST connector can attempt a pull once the engagement is materialized.
     for i, c in enumerate(parsed.get("proposed_connectors", [])):
         raw_table = c.get("raw_table", "")
         connector_plan.append(ConnectorPlanItem(
@@ -799,6 +820,25 @@ def _call_anthropic(
             status="proposed — to onboard",
             pulls=c.get("pulls", _pulls_text(raw_table, taxonomy.proposed_families or families, geographies, years)),
             parsing=PARSING_BY_RAW_TABLE.get(raw_table, "Typed normalization into the raw layer."),
+            base_url=c.get("base_url", "") or "",
+            endpoint_path=c.get("path", "") or "",
+            auth_type=c.get("auth", "") or "",
+        ))
+
+    # New vertical: proposed subcategories (with HS / regulatory codes) that will
+    # seed the materialized engagement's cells. Parsed defensively (missing → empty).
+    proposed_subcategories: list[ProposedSubcategory] = []
+    for s in parsed.get("proposed_subcategories", []) or []:
+        if not isinstance(s, dict):
+            continue
+        name = s.get("name", "")
+        if not name:
+            continue
+        proposed_subcategories.append(ProposedSubcategory(
+            family=s.get("family", "") or "",
+            name=name,
+            hs_codes=list(s.get("hs_codes", []) or []),
+            regulatory_codes=list(s.get("regulatory_codes", []) or []),
         ))
 
     if not connector_plan:
@@ -839,6 +879,7 @@ def _call_anthropic(
         recommended_sources=rec_sources,
         interpretation_notes=parsed.get("interpretation_notes", "Interpreted by Claude."),
         taxonomy_status=taxonomy,
+        proposed_subcategories=proposed_subcategories,
         connector_plan=connector_plan,
         method_plan=method_plan,
         execution_plan=execution_plan,

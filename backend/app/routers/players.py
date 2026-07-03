@@ -22,9 +22,10 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
-from backend.app.deps import CurrentUserDep, DbSession
+from backend.app.deps import CurrentUserDep, DbSession, EngagementDep
 from backend.app.models import Cell, PlayerShare, SupplierRelationship
 from backend.app.schemas import (
     PlayerShareList,
@@ -42,14 +43,24 @@ router = APIRouter(prefix="/cells", tags=["players"])
 # Helpers
 # --------------------------------------------------------------------------- #
 
-def _require_cell(cell_id: int, session) -> Cell:
+def _require_cell(cell_id: int, session, engagement_id: str) -> Cell:
     """Return the Cell row or raise HTTP 404.
 
     Keeps endpoint handlers clean: every handler calls this once at the top
     so callers receive a meaningful 404 rather than an empty result set when the
-    cell_id is wrong.
+    cell_id is wrong. Scoped to the active engagement so a cell_id belonging to
+    another engagement 404s rather than leaking cross-engagement data.
     """
-    cell = session.get(Cell, cell_id)
+    cell = (
+        session.execute(
+            select(Cell).where(
+                Cell.cell_id == cell_id,
+                Cell.engagement_id == engagement_id,
+            )
+        )
+        .scalars()
+        .first()
+    )
     if cell is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -70,6 +81,7 @@ def _require_cell(cell_id: int, session) -> Cell:
 def list_player_shares(
     cell_id: int,
     session: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     player_role: Annotated[
         str | None,
@@ -95,12 +107,15 @@ def list_player_shares(
 
     Returns an empty ``items`` list (not 404) if the cell has no player data yet.
     """
-    _require_cell(cell_id, session)
+    _require_cell(cell_id, session, engagement_id)
 
     q = (
         session.query(PlayerShare)
         .options(joinedload(PlayerShare.company))
-        .filter(PlayerShare.cell_id == cell_id)
+        .filter(
+            PlayerShare.cell_id == cell_id,
+            PlayerShare.engagement_id == engagement_id,
+        )
     )
     if player_role is not None:
         q = q.filter(PlayerShare.player_role == player_role)
@@ -135,6 +150,7 @@ def list_player_shares(
 def list_supplier_relationships(
     cell_id: int,
     session: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     limit: Annotated[int, Query(ge=1, le=200, description="Page size (max 200).")] = 50,
     offset: Annotated[int, Query(ge=0, description="Zero-based row offset.")] = 0,
@@ -152,7 +168,7 @@ def list_supplier_relationships(
     * ``evidence_type`` / ``evidence_strength`` — provenance metadata.
     * ``source_id`` — drill-chain anchor (invariant: every fact row has one).
     """
-    _require_cell(cell_id, session)
+    _require_cell(cell_id, session, engagement_id)
 
     q = (
         session.query(SupplierRelationship)
@@ -160,7 +176,10 @@ def list_supplier_relationships(
             joinedload(SupplierRelationship.buyer),
             joinedload(SupplierRelationship.supplier),
         )
-        .filter(SupplierRelationship.cell_id == cell_id)
+        .filter(
+            SupplierRelationship.cell_id == cell_id,
+            SupplierRelationship.engagement_id == engagement_id,
+        )
     )
 
     total: int = q.count()

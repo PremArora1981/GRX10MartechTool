@@ -50,6 +50,19 @@ _TS = datetime.datetime
 _Num = decimal.Decimal
 
 
+class Engagement(Base):
+    __tablename__ = "engagements"
+
+    engagement_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    active_profile: Mapped[str] = mapped_column(Text, nullable=False, default="Standard")
+    web_search_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    brief_text: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[_TS] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # =========================================================================== #
 # LAYER 1 — SPINE
 # =========================================================================== #
@@ -57,6 +70,7 @@ class TaxonomyFamily(Base):
     __tablename__ = "taxonomy_families"
 
     family_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[_TS | None] = mapped_column(DateTime(timezone=True))
@@ -70,6 +84,7 @@ class TaxonomySubcategory(Base):
     __tablename__ = "taxonomy_subcategories"
 
     subcategory_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     family_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("taxonomy_families.family_id"), nullable=False
     )
@@ -92,6 +107,7 @@ class Geography(Base):
     __table_args__ = (UniqueConstraint("country", "segment"),)
 
     geography_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     country: Mapped[str] = mapped_column(Text, nullable=False)
     # DOMESTIC | IMPORT | EXPORT | SELF_CONSUME ...
     segment: Mapped[str] = mapped_column(Text, nullable=False)
@@ -101,6 +117,7 @@ class Company(Base):
     __tablename__ = "companies"
 
     company_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     company_type: Mapped[str | None] = mapped_column(Text)
     country_hq: Mapped[str | None] = mapped_column(Text)
@@ -113,6 +130,7 @@ class Source(Base):
     __tablename__ = "sources"
 
     source_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     publisher: Mapped[str] = mapped_column(Text, nullable=False)
     url_pattern: Mapped[str | None] = mapped_column(Text)
     auth: Mapped[str | None] = mapped_column(Text)             # none | api_key | oauth | login | scrape
@@ -206,6 +224,7 @@ class Assumption(Base):
     __tablename__ = "assumptions"
 
     assumption_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     scope_company_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("companies.company_id"))
     scope_subcategory_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("taxonomy_subcategories.subcategory_id")
@@ -237,6 +256,7 @@ class _RawBase(Base):
     __abstract__ = True
 
     raw_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     accessed_at: Mapped[_TS | None] = mapped_column(DateTime(timezone=True))
     raw_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
@@ -408,6 +428,7 @@ class Cell(Base):
     )
 
     cell_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     subcategory_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("taxonomy_subcategories.subcategory_id"), nullable=False
     )
@@ -441,6 +462,7 @@ class CellTriangulation(Base):
     )
 
     triangulation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     cell_id: Mapped[int] = mapped_column(Integer, ForeignKey("cells.cell_id"), nullable=False)
     method_code: Mapped[str] = mapped_column(
         Text, ForeignKey("method_registry.method_code"), nullable=False
@@ -470,6 +492,7 @@ class CellTriangulationSummary(Base):
     __tablename__ = "cell_triangulation_summary"
 
     cell_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     n_estimates: Mapped[int | None] = mapped_column(Integer)
     n_distinct_methods: Mapped[int | None] = mapped_column(Integer)
     n_independent_signals: Mapped[int | None] = mapped_column(Integer)
@@ -492,6 +515,7 @@ class PlayerShare(Base):
     __table_args__ = (UniqueConstraint("cell_id", "company_id", "player_role"),)
 
     share_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     cell_id: Mapped[int] = mapped_column(Integer, ForeignKey("cells.cell_id"), nullable=False)
     company_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("companies.company_id"), nullable=False
@@ -513,6 +537,7 @@ class SupplierRelationship(Base):
     __tablename__ = "supplier_relationships"
 
     relationship_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     buyer_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.company_id"), nullable=False)
     supplier_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.company_id"), nullable=False)
     cell_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("cells.cell_id"))
@@ -530,6 +555,7 @@ class Facility(Base):
     __tablename__ = "facilities"
 
     facility_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.company_id"), nullable=False)
     country: Mapped[str | None] = mapped_column(Text)
     city: Mapped[str | None] = mapped_column(Text)
@@ -552,6 +578,7 @@ class Catalyst(Base):
     )
 
     catalyst_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     cell_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("cells.cell_id"))
     company_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("companies.company_id"))
     catalyst_type: Mapped[str] = mapped_column(Text, nullable=False)
@@ -565,6 +592,7 @@ class Recommendation(Base):
     __tablename__ = "recommendations"
 
     recommendation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     scope_type: Mapped[str] = mapped_column(Text, nullable=False)
     scope_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     priority_score: Mapped[_Num | None] = mapped_column(Numeric(5, 2))
@@ -581,6 +609,7 @@ class CellAssumptionLink(Base):
     assumption_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("assumptions.assumption_id"), primary_key=True
     )
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     weight: Mapped[_Num | None] = mapped_column(Numeric(3, 2), default=1.0)
 
 
@@ -588,6 +617,7 @@ class Commentary(Base):
     __tablename__ = "commentary"
 
     commentary_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    engagement_id: Mapped[str] = mapped_column(Text, nullable=False)
     scope_type: Mapped[str] = mapped_column(Text, nullable=False)  # cell | subcategory | family | engagement
     scope_id: Mapped[int | None] = mapped_column(Integer)
     body_markdown: Mapped[str] = mapped_column(Text, nullable=False)
@@ -598,6 +628,7 @@ class Commentary(Base):
 
 __all__ = [
     "Base",
+    "Engagement",
     # spine
     "TaxonomyFamily", "TaxonomySubcategory", "Geography", "Company", "Source",
     "MethodRegistry", "ConnectorCredential", "CredentialAudit",

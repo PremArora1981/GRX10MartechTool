@@ -23,32 +23,43 @@ from typing import Any
 from fastapi import APIRouter
 from sqlalchemy import text
 
-from backend.app.deps import DbSession
+from backend.app.deps import DbSession, EngagementDep
 
 logger = logging.getLogger("grx10.routers.reference")
 
 router = APIRouter(prefix="/reference", tags=["reference"])
 
 
-def _rows(session: DbSession, sql: str) -> list[dict[str, Any]]:
-    return [dict(r) for r in session.execute(text(sql)).mappings().all()]
+def _rows(
+    session: DbSession, sql: str, params: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    return [
+        dict(r)
+        for r in session.execute(text(sql), params or {}).mappings().all()
+    ]
 
 
 @router.get("/geographies", response_model=None, summary="Geographies (country × segment)")
-def list_geographies(session: DbSession) -> list[dict[str, Any]]:
+def list_geographies(
+    session: DbSession, engagement_id: EngagementDep
+) -> list[dict[str, Any]]:
     """All geography rows, ordered by country then segment."""
     return _rows(
         session,
         """
         SELECT geography_id, country, segment
         FROM geographies
+        WHERE engagement_id = :eng
         ORDER BY country, segment
         """,
+        {"eng": engagement_id},
     )
 
 
 @router.get("/subcategories", response_model=None, summary="Taxonomy subcategories")
-def list_subcategories(session: DbSession) -> list[dict[str, Any]]:
+def list_subcategories(
+    session: DbSession, engagement_id: EngagementDep
+) -> list[dict[str, Any]]:
     """Taxonomy subcategories.
 
     ``hs_codes`` / ``regulatory_codes`` are text arrays (coerced to ``[]`` when
@@ -62,8 +73,10 @@ def list_subcategories(session: DbSession) -> list[dict[str, Any]]:
                COALESCE(regulatory_codes, '{}') AS regulatory_codes,
                version, superseded_by
         FROM taxonomy_subcategories
+        WHERE engagement_id = :eng
         ORDER BY family_id, name
         """,
+        {"eng": engagement_id},
     )
     for r in rows:
         r["hs_codes"] = list(r.get("hs_codes") or [])
@@ -72,15 +85,19 @@ def list_subcategories(session: DbSession) -> list[dict[str, Any]]:
 
 
 @router.get("/companies", response_model=None, summary="Companies (seeded + discovered players)")
-def list_companies(session: DbSession) -> list[dict[str, Any]]:
+def list_companies(
+    session: DbSession, engagement_id: EngagementDep
+) -> list[dict[str, Any]]:
     """All companies, ordered by name."""
     return _rows(
         session,
         """
         SELECT company_id, name, company_type, country_hq, seeded_role, discovered
         FROM companies
+        WHERE engagement_id = :eng
         ORDER BY name
         """,
+        {"eng": engagement_id},
     )
 
 

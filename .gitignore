@@ -22,3 +22,6 @@ Thumbs.db
 # Local scratch
 *.log
 ~$*
+
+# Locked/irrelevant Office docs in docs/
+docs/*.docx

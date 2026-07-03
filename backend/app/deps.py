@@ -22,6 +22,7 @@ from collections.abc import Iterator
 from typing import Annotated, Callable
 
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.app.config import settings
@@ -38,6 +39,65 @@ def get_session() -> Iterator[Session]:
 
 
 DbSession = Annotated[Session, Depends(get_session)]
+
+
+# --------------------------------------------------------------------------- #
+# Active engagement (multi-engagement scoping)
+# --------------------------------------------------------------------------- #
+DEFAULT_ENGAGEMENT_ID = "eng_medtech"
+
+
+def get_engagement_id(request: Request) -> str:
+    """Resolve the active engagement for this request.
+
+    Precedence: ``X-Engagement-Id`` header → ``engagement_id`` query param →
+    ``engagement_id`` cookie → the protected Medtech demo default. An unknown or
+    archived id falls back to the default rather than 404-ing the whole app, so a
+    stale cookie never bricks the UI. Every scoped router filters its queries by
+    this value and stamps it on inserts.
+
+    ⚠️ SECURITY — engagement authorization is DEFERRED to the WorkOS integration
+    (hard gate before multi-user / real client data). Today the app runs in
+    anonymous-owner mode: one principal, no user store, engagements are
+    workspace-level and all belong to that single operator — so there is no user
+    boundary to cross and this header/cookie selection is not cross-tenant IDOR
+    *yet*. The moment real users exist this becomes exploitable: an
+    ``engagement_members(engagement_id, user_id)`` table must be added and this
+    function must take ``CurrentUserDep`` and enforce membership
+    (``SELECT 1 FROM engagement_members WHERE engagement_id=:e AND user_id=:u``),
+    raising 403 on non-membership and NOT silently falling back to the default
+    for an unauthorized id. See docs/MULTI_ENGAGEMENT_PLAN.md risks.
+
+    Validation is a single cheap indexed lookup; it opens its own short-lived
+    session so this dep composes cleanly with routers that also take ``DbSession``.
+    """
+    raw = (
+        request.headers.get("X-Engagement-Id")
+        or request.query_params.get("engagement_id")
+        or request.cookies.get("engagement_id")
+        or DEFAULT_ENGAGEMENT_ID
+    ).strip()
+    if not raw:
+        return DEFAULT_ENGAGEMENT_ID
+    try:
+        with next(_get_session()) as session:  # type: ignore[call-overload]
+            row = session.execute(
+                text(
+                    "SELECT 1 FROM engagements "
+                    "WHERE engagement_id = :e AND status = 'active'"
+                ),
+                {"e": raw},
+            ).first()
+    except Exception as exc:  # noqa: BLE001 — never let scoping crash a request
+        logger.warning("engagement lookup failed for %r: %s; using default", raw, exc)
+        return DEFAULT_ENGAGEMENT_ID
+    if row is None:
+        logger.debug("unknown/archived engagement %r; falling back to default", raw)
+        return DEFAULT_ENGAGEMENT_ID
+    return raw
+
+
+EngagementDep = Annotated[str, Depends(get_engagement_id)]
 
 
 # --------------------------------------------------------------------------- #

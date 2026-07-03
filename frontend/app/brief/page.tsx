@@ -24,7 +24,9 @@ import type {
   BriefExecutionStep,
   BriefInterpretation,
   BriefMethodPlanItem,
+  BriefProposedSubcategory,
   BriefRecommendedSource,
+  EngagementCreateResult,
 } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -259,6 +261,64 @@ function MethodPlanSection({
   );
 }
 
+/** Proposed subcategories for a new-vertical brief, grouped by family. */
+function ProposedSubcategoriesSection({
+  subcategories,
+}: {
+  subcategories: BriefProposedSubcategory[];
+}) {
+  // Group by family, preserving first-seen order.
+  const byFamily: { family: string; items: BriefProposedSubcategory[] }[] = [];
+  for (const sub of subcategories) {
+    let group = byFamily.find((g) => g.family === sub.family);
+    if (!group) {
+      group = { family: sub.family, items: [] };
+      byFamily.push(group);
+    }
+    group.items.push(sub);
+  }
+
+  return (
+    <SectionCard
+      title={`Proposed Subcategories — ${subcategories.length} for a new vertical`}
+    >
+      <p className="mb-3 text-xs text-ink-muted">
+        This brief falls outside the current taxonomy — the platform proposes the
+        subcategories below (with candidate HS &amp; regulatory codes) to seed the
+        new vertical.
+      </p>
+      <div className="space-y-4">
+        {byFamily.map((group) => (
+          <div key={group.family}>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-subtle">
+              {group.family}
+            </h3>
+            <ul className="divide-y divide-line">
+              {group.items.map((sub) => (
+                <li key={`${group.family}::${sub.name}`} className="py-2.5 first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-ink">{sub.name}</span>
+                    {sub.hs_codes.map((code) => (
+                      <span key={`hs-${code}`} className="badge bg-sky-50 font-mono text-sky-700">
+                        HS {code}
+                      </span>
+                    ))}
+                    {sub.regulatory_codes.map((code) => (
+                      <span key={`reg-${code}`} className="badge bg-amber-50 font-mono text-amber-700">
+                        {code}
+                      </span>
+                    ))}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
@@ -283,6 +343,14 @@ export default function BriefPage() {
   const [connectorPlan, setConnectorPlan] = useState<BriefConnectorPlanItem[]>([]);
   const [methodPlan, setMethodPlan] = useState<BriefMethodPlanItem[]>([]);
 
+  // Create-engagement flow state
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [engagementName, setEngagementName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createResult, setCreateResult] = useState<EngagementCreateResult | null>(null);
+  const [populating, setPopulating] = useState(false);
+
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleInterpret = useCallback(async () => {
@@ -300,6 +368,14 @@ export default function BriefPage() {
       setConstraints(data.constraints);
       setConnectorPlan(data.connector_plan ?? []);
       setMethodPlan(data.method_plan ?? []);
+      // Reset the create-engagement flow for the fresh interpretation.
+      setShowCreateForm(false);
+      setCreateResult(null);
+      setCreateError(null);
+      // Prefill an engagement name from the interpreted scope.
+      const famPart = data.families.length > 0 ? data.families.join(", ") : "All families";
+      const geoPart = data.geographies.length > 0 ? ` — ${data.geographies.join(", ")}` : "";
+      setEngagementName(`${famPart}${geoPart} (${data.years.from}–${data.years.to})`);
     } catch (err) {
       const msg =
         err instanceof ApiError
@@ -339,6 +415,80 @@ export default function BriefPage() {
       setMethodPlan((prev) => prev.filter((m) => m.method_code !== methodCode)),
     [],
   );
+
+  const handleCreate = useCallback(async () => {
+    if (!result) return;
+    const name = engagementName.trim();
+    if (!name) {
+      setCreateError("Please give the engagement a name.");
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const res = await api.createEngagement({
+        name,
+        brief_text: briefText,
+        families,
+        geographies,
+        year_from: yearFrom,
+        year_to: yearTo,
+        plan: {
+          families,
+          geographies,
+          proposed_subcategories: result.proposed_subcategories ?? [],
+          connector_plan: connectorPlan,
+          method_plan: methodPlan,
+          taxonomy_status: result.taxonomy_status,
+          web_search_enabled: true,
+        },
+      });
+      // Backend is a different origin — its Set-Cookie won't stick, so set it
+      // client-side to scope subsequent requests to the new engagement.
+      document.cookie = `engagement_id=${res.engagement_id}; path=/; max-age=31536000; samesite=lax`;
+      setCreateResult(res);
+      setShowCreateForm(false);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Failed to create the engagement — please try again.";
+      setCreateError(msg);
+    } finally {
+      setCreating(false);
+    }
+  }, [
+    result,
+    engagementName,
+    briefText,
+    families,
+    geographies,
+    yearFrom,
+    yearTo,
+    connectorPlan,
+    methodPlan,
+  ]);
+
+  const handlePopulate = useCallback(async () => {
+    if (!createResult) return;
+    setPopulating(true);
+    setCreateError(null);
+    try {
+      await api.populateEngagement(createResult.engagement_id);
+      window.location.href = "/";
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Failed to start population — please try again.";
+      setCreateError(msg);
+      setPopulating(false);
+    }
+  }, [createResult]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -426,6 +576,13 @@ export default function BriefPage() {
                 </div>
               )}
             </div>
+          )}
+
+          {/* Proposed subcategories (new-vertical briefs only) */}
+          {(result.proposed_subcategories?.length ?? 0) > 0 && (
+            <ProposedSubcategoriesSection
+              subcategories={result.proposed_subcategories!}
+            />
           )}
 
           {/* Families */}
@@ -561,27 +718,152 @@ export default function BriefPage() {
             </div>
           )}
 
-          {/* CTA */}
-          <div className="flex justify-end pt-2">
-            <button
-              type="button"
-              onClick={() => router.push("/cells")}
-              className="inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand/90"
-            >
-              View the market model
-              <svg
-                viewBox="0 0 24 24"
-                className="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M5 12h14M12 5l7 7-7 7" />
-              </svg>
-            </button>
+          {/* CTA + create-engagement flow */}
+          <div className="pt-2">
+            {createResult ? (
+              /* ── Cost banner (post-create; does NOT auto-run) ── */
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-4">
+                <div className="text-sm font-semibold text-emerald-800">
+                  Created {createResult.name}: {createResult.planned_cells} planned
+                  cells across {createResult.subcategories} subcategories ×{" "}
+                  {createResult.geographies} geographies.
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-emerald-700">
+                  Populate now runs ~{createResult.planned_cells} web searches (a
+                  few minutes).
+                  {createResult.capped &&
+                    " Note: the grid was capped to stay within limits."}
+                </p>
+                {createError && (
+                  <p className="mt-2 text-sm text-red-600" role="alert">
+                    {createError}
+                  </p>
+                )}
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handlePopulate}
+                    disabled={populating}
+                    className="inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {populating ? (
+                      <>
+                        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        Populating…
+                      </>
+                    ) : (
+                      "Populate now"
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.location.href = "/";
+                    }}
+                    disabled={populating}
+                    className="inline-flex items-center gap-2 rounded-lg border border-line bg-surface px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface-subtle disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Skip — explore empty
+                  </button>
+                </div>
+              </div>
+            ) : showCreateForm ? (
+              /* ── Inline create form ── */
+              <div className="card p-5">
+                <label
+                  htmlFor="engagement-name"
+                  className="mb-2 block text-sm font-medium text-ink"
+                >
+                  Engagement name
+                </label>
+                <input
+                  id="engagement-name"
+                  type="text"
+                  value={engagementName}
+                  onChange={(e) => setEngagementName(e.target.value)}
+                  placeholder="e.g. Cardiovascular devices — Southeast Asia (2024–2029)"
+                  className="w-full rounded-lg border border-line bg-surface-subtle px-3 py-2.5 text-sm text-ink placeholder-ink-subtle focus:outline-none focus:ring-2 focus:ring-brand"
+                />
+                {createError && (
+                  <p className="mt-2 text-sm text-red-600" role="alert">
+                    {createError}
+                  </p>
+                )}
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCreate}
+                    disabled={creating || !engagementName.trim()}
+                    className="inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {creating ? (
+                      <>
+                        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        Creating…
+                      </>
+                    ) : (
+                      "Create engagement"
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCreateForm(false);
+                      setCreateError(null);
+                    }}
+                    disabled={creating}
+                    className="text-sm font-medium text-ink-muted transition-colors hover:text-ink disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* ── Primary CTAs ── */
+              <div className="flex flex-wrap justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => router.push("/cells")}
+                  className="inline-flex items-center gap-2 rounded-lg border border-line bg-surface px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-surface-subtle"
+                >
+                  View the market model
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M5 12h14M12 5l7 7-7 7" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateError(null);
+                    setShowCreateForm(true);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand/90"
+                >
+                  Create engagement
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M5 12h14M12 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

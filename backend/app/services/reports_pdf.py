@@ -395,6 +395,7 @@ def _player_bar_chart(
 # ---------------------------------------------------------------------------
 def _load_cells(
     session: Session,
+    engagement_id:   str,
     subcategory_ids: list[int] | None = None,
     geography_ids:   list[int] | None = None,
     year:            int        | None = None,
@@ -410,7 +411,7 @@ def _load_cells(
             joinedload(Cell.triangulations).joinedload(CellTriangulation.method),
             joinedload(Cell.triangulations).joinedload(CellTriangulation.source),
         )
-        .where(Cell.status == "active")
+        .where(Cell.status == "active", Cell.engagement_id == engagement_id)
         .order_by(Cell.year.desc(), Cell.subcategory_id, Cell.geography_id)
         .limit(limit)
     )
@@ -427,6 +428,7 @@ def _load_cells(
 
 def _load_player_shares(
     session: Session,
+    engagement_id: str,
     cell_ids: list[int],
     limit: int = 1000,
 ) -> list[PlayerShare]:
@@ -439,7 +441,10 @@ def _load_player_shares(
             joinedload(PlayerShare.company),
             joinedload(PlayerShare.source),
         )
-        .where(PlayerShare.cell_id.in_(cell_ids))
+        .where(
+            PlayerShare.cell_id.in_(cell_ids),
+            PlayerShare.engagement_id == engagement_id,
+        )
         .order_by(PlayerShare.cell_id, PlayerShare.rank)
         .limit(limit)
     )
@@ -1136,6 +1141,7 @@ def _filters_desc(
 
 def build_executive_audit(
     session: Session,
+    engagement_id:   str,
     subcategory_ids: list[int] | None = None,
     geography_ids:   list[int] | None = None,
     year:            int | None = None,
@@ -1144,7 +1150,7 @@ def build_executive_audit(
     """Build the Executive Audit PDF and return a ready-to-stream BytesIO."""
     ts    = _ts_now()
     title = "Executive Audit Report"
-    cells = _load_cells(session, subcategory_ids, geography_ids, year, confidence)
+    cells = _load_cells(session, engagement_id, subcategory_ids, geography_ids, year, confidence)
     reg   = SourceRegistry()
 
     story: list = []
@@ -1162,6 +1168,7 @@ def build_executive_audit(
 
 def build_gap_analysis(
     session: Session,
+    engagement_id:   str,
     subcategory_ids: list[int] | None = None,
     geography_ids:   list[int] | None = None,
     year:            int | None = None,
@@ -1170,7 +1177,7 @@ def build_gap_analysis(
     """Build the Gap Analysis PDF and return a ready-to-stream BytesIO."""
     ts    = _ts_now()
     title = "Gap Analysis Report"
-    cells = _load_cells(session, subcategory_ids, geography_ids, year, confidence)
+    cells = _load_cells(session, engagement_id, subcategory_ids, geography_ids, year, confidence)
     reg   = SourceRegistry()
 
     story: list = []
@@ -1188,6 +1195,7 @@ def build_gap_analysis(
 
 def build_player_shares(
     session: Session,
+    engagement_id:   str,
     subcategory_ids: list[int] | None = None,
     geography_ids:   list[int] | None = None,
     year:            int | None = None,
@@ -1196,11 +1204,11 @@ def build_player_shares(
     """Build the Player Shares PDF and return a ready-to-stream BytesIO."""
     ts    = _ts_now()
     title = "Player Shares Report"
-    cells = _load_cells(session, subcategory_ids, geography_ids, year, confidence)
+    cells = _load_cells(session, engagement_id, subcategory_ids, geography_ids, year, confidence)
     reg   = SourceRegistry()
 
     cell_ids = [c.cell_id for c in cells]
-    shares   = _load_player_shares(session, cell_ids)
+    shares   = _load_player_shares(session, engagement_id, cell_ids)
 
     story: list = []
     story += section_cover(title, "Market Participant Analysis",
@@ -1216,6 +1224,7 @@ def build_player_shares(
 
 def build_custom(
     session: Session,
+    engagement_id:   str,
     sections: list[str],
     subcategory_ids: list[int] | None = None,
     geography_ids:   list[int] | None = None,
@@ -1231,7 +1240,7 @@ def build_custom(
     Valid values for *sections*: see :data:`VALID_SECTIONS`.
     """
     ts    = _ts_now()
-    cells = _load_cells(session, subcategory_ids, geography_ids, year, confidence)
+    cells = _load_cells(session, engagement_id, subcategory_ids, geography_ids, year, confidence)
     reg   = SourceRegistry()
 
     cell_ids = [c.cell_id for c in cells]
@@ -1239,7 +1248,7 @@ def build_custom(
 
     # Pre-load player shares only if the section is requested
     if "player_shares" in sections:
-        shares = _load_player_shares(session, cell_ids)
+        shares = _load_player_shares(session, engagement_id, cell_ids)
 
     story: list = section_cover(
         title, subtitle,

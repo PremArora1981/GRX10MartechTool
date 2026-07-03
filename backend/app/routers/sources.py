@@ -28,7 +28,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from backend.app.deps import DbSession, CurrentUserDep
+from backend.app.deps import DbSession, CurrentUserDep, EngagementDep
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -95,6 +95,7 @@ def _build_raw_table_to_methods(methods_rows: list[Any]) -> dict[str, list[str]]
 )
 def get_recommended_sources(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
     family: str | None = Query(
         default=None,
@@ -124,7 +125,9 @@ def get_recommended_sources(
             FROM sources
             WHERE raw_table IS NOT NULL
               AND enabled IS NOT FALSE
-        """)
+              AND engagement_id = :eng
+        """),
+        {"eng": engagement_id},
     ).fetchall()
 
     # Build raw_table → [source_id] index (enabled sources only).
@@ -154,6 +157,7 @@ def get_recommended_sources(
 )
 def list_sources(
     db: DbSession,
+    engagement_id: EngagementDep,
     _user: CurrentUserDep,
 ) -> list[SourceDetailOut]:
     """Return every row of the sources table enriched with:
@@ -170,10 +174,12 @@ def list_sources(
             SELECT source_id, publisher, class AS source_class, access_method,
                    raw_table, enabled, last_probe_status, last_probe_detail, notes
             FROM sources
+            WHERE engagement_id = :eng
             ORDER BY
                 CASE class WHEN 'A' THEN 1 WHEN 'B' THEN 2 WHEN 'C' THEN 3 ELSE 4 END,
                 publisher
-        """)
+        """),
+        {"eng": engagement_id},
     ).fetchall()
 
     methods_rows = db.execute(
