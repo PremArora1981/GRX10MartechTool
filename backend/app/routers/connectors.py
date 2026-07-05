@@ -1663,6 +1663,164 @@ def probe_connector(
     )
 
 
+class PullOut(BaseModel):
+    source_id: str
+    raw_table: str
+    probe_status: str
+    rows_landed: int
+    rows_normalized: int
+    detail: str
+
+
+def _raw_table_columns(db: Session, raw_table: str) -> set[str]:
+    rows = db.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = :t"
+        ),
+        {"t": raw_table},
+    ).all()
+    return {r[0] for r in rows}
+
+
+@router.post(
+    "/{source_id}/pull",
+    response_model=PullOut,
+    summary="Pull real data from a configured connector into this engagement's raw layer",
+)
+def pull_connector(
+    source_id: str,
+    db: DbSession,
+    engagement_id: EngagementDep,
+    _user: CurrentUserDep,
+) -> PullOut:
+    """Ingest live rows from a source the user has configured (endpoint + credential).
+
+    This is the "you gave us an API/URL → we pull your data" step of guided
+    connector onboarding: it resolves the connector, probes it, and — when
+    healthy — pulls payloads and lands them (deduped by content hash) into the
+    source's ``raw_*`` table **stamped with this engagement_id** and with typed
+    columns filled from ``normalize()``. The landed rows are immediately drillable
+    on the Sources / Cell Detail screens. Re-sizing cells from the new evidence is
+    a follow-on (engagement-aware pipeline); this proves and lands the data flow.
+
+    404 if the source isn't in this engagement; 409 if it has no runnable
+    connector; 502 with the probe detail if the endpoint isn't reachable/authorised.
+    """
+    discover()
+    row = _load_source_row(db, source_id, engagement_id)
+
+    raw_table = row.get("raw_table")
+    if not row.get("connector"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=(
+                "This source has no runnable connector. For a proposed source, "
+                "set connector='generic_rest' with a base_url + endpoints config, "
+                "or use a catalog connector."
+            ),
+        )
+    if raw_table not in _RAW_TABLE_COLUMNS:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            detail=f"Unknown raw_table {raw_table!r} for this source.")
+
+    credential: str | None = None
+    cred_ref = row.get("auth_secret_ref")
+    if cred_ref:
+        credential = credential_service.retrieve(db, cred_ref=cred_ref)
+
+    connector = get_connector(row, credential)
+    if connector is None:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            detail=f"No connector implementation resolved for {source_id!r}.")
+
+    # Gate the pull on a healthy probe (SSRF-guarded for generic HTTP).
+    try:
+        probe = connector.probe()
+        pstatus = getattr(probe, "status", "UNREACHABLE")
+        pdetail = getattr(probe, "detail", "")
+    except Exception as exc:  # noqa: BLE001
+        pstatus, pdetail = "UNREACHABLE", str(exc)
+    _write_probe_result(db, source_id, ProbeResult(pstatus, pdetail, None),
+                        datetime.now(timezone.utc), engagement_id)
+    if pstatus != "OK":
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            detail=f"Probe {pstatus}: {pdetail or 'endpoint not reachable/authorised'}.",
+        )
+
+    # Engagement-scoped taxonomy + geographies for the connector's pull().
+    taxonomy = [dict(r._mapping) for r in db.execute(
+        text(
+            "SELECT sc.subcategory_id, sc.name, sc.hs_codes, sc.regulatory_codes, "
+            "       f.name AS family "
+            "FROM taxonomy_subcategories sc JOIN taxonomy_families f USING (family_id) "
+            "WHERE sc.engagement_id = :e"
+        ), {"e": engagement_id})]
+    geographies = [dict(r._mapping) for r in db.execute(
+        text("SELECT geography_id, country, segment FROM geographies WHERE engagement_id = :e"),
+        {"e": engagement_id})]
+
+    cols = _raw_table_columns(db, raw_table)
+    landed = 0
+    normalized = 0
+    # Bound an interactive pull by wall-clock as well as row count: real
+    # connectors (World Bank, Comtrade) iterate many slow calls, so we return
+    # promptly with whatever landed and let the user pull again for more.
+    import time as _time
+    deadline = _time.monotonic() + 25.0
+    truncated = False
+    try:
+        for raw in connector.pull(taxonomy=taxonomy, geographies=geographies, since=None):
+            if _time.monotonic() > deadline:
+                truncated = True
+                break
+            payload = json.dumps(raw, default=str, ensure_ascii=False)
+            new_row = db.execute(
+                text(
+                    f"INSERT INTO {raw_table} (source_id, engagement_id, raw_json) "
+                    f"SELECT :sid, :eng, CAST(:payload AS jsonb) "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {raw_table} "
+                    f"  WHERE source_id = :sid AND engagement_id = :eng "
+                    f"  AND md5(raw_json::text) = md5(CAST(:payload AS jsonb)::text)) "
+                    f"RETURNING raw_id"
+                ),
+                {"sid": source_id, "eng": engagement_id, "payload": payload},
+            ).first()
+            if new_row is None:
+                continue
+            landed += 1
+            # Best-effort typed-column fill from normalize().
+            try:
+                norm = connector.normalize(raw)
+            except Exception:  # noqa: BLE001
+                norm = None
+            if norm:
+                setcols = {k: v for k, v in norm.items() if k in cols and k not in ("raw_id", "source_id", "engagement_id", "raw_json")}
+                if setcols:
+                    assigns = ", ".join(f"{k} = :{k}" for k in setcols)
+                    params = {**setcols, "rid": new_row.raw_id}
+                    db.execute(text(f"UPDATE {raw_table} SET {assigns} WHERE raw_id = :rid"), params)
+                    normalized += 1
+            if landed >= 500:  # bound a single interactive pull
+                break
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("pull failed for %s: %s", source_id, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Pull failed: {str(exc)[:200]}") from exc
+
+    more = " (partial — pull again for more)" if truncated else ""
+    return PullOut(
+        source_id=source_id, raw_table=raw_table, probe_status=pstatus,
+        rows_landed=landed, rows_normalized=normalized,
+        detail=(f"Landed {landed} new rows ({normalized} typed) into {raw_table}{more}. "
+                "Drill any cell using this source to see the raw evidence."
+                if landed else "No new rows (endpoint returned nothing new)."),
+    )
+
+
 @router.post(
     "/{source_id}/suggest-mapping",
     response_model=SuggestMappingOut,

@@ -204,6 +204,91 @@ function ConnectorPlanSection({
   );
 }
 
+/**
+ * Research Methodology — reframes the connector plan as a tiered data-sourcing
+ * methodology (Primary / Secondary / Tertiary), computed client-side from the
+ * connector plan. This is what makes the market-model rigor legible.
+ */
+function MethodologySection({ plan }: { plan: BriefConnectorPlanItem[] }) {
+  const TIERS = [
+    {
+      sourceClass: "A",
+      name: "Primary",
+      ceiling: "HIGH",
+      description:
+        "Authoritative, first-party data: customs/trade records, official government statistics, company filings. Anchors each cell's number; can qualify HIGH confidence.",
+    },
+    {
+      sourceClass: "B",
+      name: "Secondary",
+      ceiling: "MEDIUM",
+      description:
+        "Published industry research and association data (market reports, analyst estimates). Cross-checks the primary number; caps at MEDIUM confidence.",
+    },
+    {
+      sourceClass: "C",
+      name: "Tertiary",
+      ceiling: "LOW",
+      description:
+        "Proxies, news, and agentic web search. Fills gaps and seeds cells where no primary/secondary source exists; hard-capped at LOW confidence.",
+    },
+  ] as const;
+
+  return (
+    <SectionCard title="Research Methodology — Primary / Secondary / Tertiary">
+      <p className="mb-4 text-xs leading-relaxed text-ink-muted">
+        Every market cell is sized by ≥2 independent methods across these tiers;
+        the confidence engine scores each cell from how many independent tiers
+        agree and how tightly their estimates cluster.
+      </p>
+      <div className="space-y-4">
+        {TIERS.map((tier) => {
+          const connectors = plan.filter(
+            (c) => c.source_class === tier.sourceClass,
+          );
+          return (
+            <div key={tier.sourceClass}>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-ink">{tier.name}</h3>
+                <span className="text-xs text-ink-subtle">
+                  Class {tier.sourceClass}
+                </span>
+                <span
+                  className={`badge ${CLASS_CHIP[tier.sourceClass] ?? CLASS_CHIP.B}`}
+                >
+                  {tier.ceiling} ceiling
+                </span>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                {tier.description}
+              </p>
+              {connectors.length > 0 ? (
+                <ul className="mt-2 space-y-1">
+                  {connectors.map((c) => (
+                    <li
+                      key={c.source_id}
+                      className="flex flex-wrap items-baseline gap-2 text-xs text-ink-muted"
+                    >
+                      <span className="font-medium text-ink">{c.publisher}</span>
+                      <span className="font-mono text-[11px] text-ink-subtle">
+                        → {c.raw_table}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs italic text-ink-subtle">
+                  none in this plan
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </SectionCard>
+  );
+}
+
 /** Estimation methodology: the methods that will triangulate each cell. */
 function MethodPlanSection({
   plan,
@@ -673,6 +758,9 @@ export default function BriefPage() {
           )}
           {(result.connector_plan?.length ?? 0) > 0 && (
             <ConnectorPlanSection plan={connectorPlan} onRemove={removeConnector} />
+          )}
+          {connectorPlan.length > 0 && (
+            <MethodologySection plan={connectorPlan} />
           )}
           {(result.method_plan?.length ?? 0) > 0 && (
             <MethodPlanSection plan={methodPlan} onRemove={removeMethod} />

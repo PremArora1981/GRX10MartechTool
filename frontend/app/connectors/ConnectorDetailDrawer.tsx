@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ConnectorHealthBadge } from "@/components/ConnectorHealthBadge";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import type { Source } from "@/lib/types";
 
@@ -194,6 +194,9 @@ export function ConnectorDetailDrawer({
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
   const [togglingEnabled, setTogglingEnabled] = useState(false);
+  const [pulling, setPulling] = useState(false);
+  const [pullError, setPullError] = useState<string | null>(null);
+  const [pullDetail, setPullDetail] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
   // Trap focus + Escape to close.
@@ -227,6 +230,24 @@ export function ConnectorDetailDrawer({
       );
     } finally {
       setProbing(false);
+    }
+  }
+
+  async function handlePull() {
+    setPulling(true);
+    setPullError(null);
+    setPullDetail(null);
+    try {
+      const res = await api.pullConnector(source.source_id);
+      setPullDetail(res.detail);
+    } catch (err) {
+      setPullError(
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : "Pull failed — see logs.",
+      );
+    } finally {
+      setPulling(false);
     }
   }
 
@@ -322,7 +343,7 @@ export function ConnectorDetailDrawer({
                 </p>
               )}
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={handleProbe}
                   disabled={probing}
@@ -330,6 +351,16 @@ export function ConnectorDetailDrawer({
                 >
                   {probing ? "Probing…" : "Probe now"}
                 </button>
+
+                {source.connector && (
+                  <button
+                    onClick={handlePull}
+                    disabled={pulling}
+                    className="btn-secondary text-xs px-3 py-1.5 disabled:opacity-50"
+                  >
+                    {pulling ? "Pulling…" : "Pull data now"}
+                  </button>
+                )}
 
                 {canEnterCredentials && (
                   <button
@@ -345,6 +376,26 @@ export function ConnectorDetailDrawer({
                   </button>
                 )}
               </div>
+
+              {source.connector && (
+                <p className="text-2xs text-ink-subtle">
+                  Fetches live rows from this source&rsquo;s endpoint using the
+                  saved credential, into this engagement — upgrading cells from
+                  the web-search draft toward primary-source evidence.
+                </p>
+              )}
+
+              {pullDetail && (
+                <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2">
+                  {pullDetail}
+                </p>
+              )}
+
+              {pullError && (
+                <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">
+                  {pullError}
+                </p>
+              )}
             </div>
           </section>
 

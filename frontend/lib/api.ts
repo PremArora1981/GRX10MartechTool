@@ -251,6 +251,17 @@ export const api = {
     apiRequest<Source>(`/connectors/${encodeURIComponent(sourceId)}`),
 
   /** Trigger a cheap probe() and return the refreshed source row (admin-gated). */
+  /** Pull real data from a configured connector into the engagement's raw layer. */
+  pullConnector: (sourceId: string) =>
+    apiRequest<{
+      source_id: string;
+      raw_table: string;
+      probe_status: string;
+      rows_landed: number;
+      rows_normalized: number;
+      detail: string;
+    }>(`/connectors/${encodeURIComponent(sourceId)}/pull`, { method: "POST" }),
+
   probeSource: (sourceId: string) =>
     apiRequest<Source>(`/connectors/${encodeURIComponent(sourceId)}/probe`, {
       method: "POST",
