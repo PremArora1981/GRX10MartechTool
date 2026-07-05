@@ -674,6 +674,73 @@ def _pick_sources(all_sources: list[dict[str, Any]]) -> list[RecommendedSource]:
 
 # ─── Anthropic interpreter ────────────────────────────────────────────────────
 
+def _loads_salvage(raw: str) -> dict[str, Any]:
+    """Parse model JSON, tolerating truncation.
+
+    A large new-vertical plan can be cut off at the token limit, leaving an
+    unterminated string / unclosed brackets. Rather than lose the entire plan to
+    the rule-based fallback, we (1) try a clean parse, then (2) trim to the last
+    balanced position and close any open brackets so the salvageable prefix
+    (families, taxonomy, most connectors) still yields a usable object.
+    """
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # Trim a dangling unterminated string, then walk to the last position where
+    # brackets balance and close the rest.
+    depth_stack: list[str] = []
+    in_str = False
+    esc = False
+    last_ok = -1
+    for i, ch in enumerate(raw):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch in "{[":
+                depth_stack.append("}" if ch == "{" else "]")
+            elif ch in "}]":
+                if depth_stack:
+                    depth_stack.pop()
+            elif ch == "," and not depth_stack:
+                break
+        if not in_str:
+            last_ok = i
+    candidate = raw[: last_ok + 1]
+    # Drop a trailing comma, then close any still-open brackets (deepest last).
+    candidate = candidate.rstrip().rstrip(",")
+    # Recompute open brackets for the trimmed candidate.
+    stack2: list[str] = []
+    in_str = esc = False
+    for ch in candidate:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack2.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack2:
+            stack2.pop()
+    if in_str:
+        candidate += '"'
+    candidate += "".join(reversed(stack2))
+    return json.loads(candidate)
+
+
+
+
 def _call_anthropic(
     input_text: str,
     all_families: list[str],
@@ -761,18 +828,20 @@ def _call_anthropic(
             "model": "claude-sonnet-4-6",
             # Headroom for the new-vertical case (proposed families + 2-4
             # subcategories each with HS/regulatory codes + 8-12 proposed
-            # connectors with endpoints); the in-catalog case uses far less.
-            "max_tokens": 3500,
+            # connectors with endpoints). This output is large; without enough
+            # room it truncates → unterminated JSON → the whole plan is lost to
+            # the rule-based fallback (which dumps irrelevant catalog sources).
+            "max_tokens": 8000,
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=60.0,
+        timeout=150.0,
     )
     resp.raise_for_status()
 
     raw_text: str = resp.json()["content"][0]["text"].strip()
     if raw_text.startswith("```"):
         raw_text = raw_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    parsed = json.loads(raw_text)
+    parsed = _loads_salvage(raw_text)
 
     families = parsed.get("families", [])
     geographies = parsed.get("geographies") or all_geographies
