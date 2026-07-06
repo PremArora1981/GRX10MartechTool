@@ -91,6 +91,24 @@ const TIER_CHIP: Record<string, string> = {
   C: "bg-amber-50 text-amber-700",
 };
 
+/** Source-class → methodology tier name (Primary / Secondary / Tertiary). */
+const TIER_NAME: Record<string, string> = {
+  A: "Primary",
+  B: "Secondary",
+  C: "Tertiary",
+};
+
+/**
+ * Connector plan item extended with an inline-configurable, write-only API key.
+ * The create payload sends the whole connector_plan item; the backend reads
+ * `api_key` and stores it encrypted, so we only need to carry it on the object.
+ */
+type ConnectorPlanItem = BriefConnectorPlanItem & { api_key?: string };
+
+/** Shared input class for the inline connector-config fields. */
+const CONFIG_INPUT_CLS =
+  "w-full rounded border border-line bg-surface px-2.5 py-1.5 text-sm text-ink placeholder-ink-subtle focus:outline-none focus:ring-2 focus:ring-brand";
+
 function statusChipClass(status: string): string {
   if (status.startsWith("connected")) return "bg-emerald-50 text-emerald-700";
   if (status.includes("credential")) return "bg-amber-50 text-amber-700";
@@ -153,46 +171,213 @@ function RemoveButton({ label, onRemove }: { label: string; onRemove: () => void
 /** Connector plan: which sources get engaged, what they pull, how it's parsed. */
 function ConnectorPlanSection({
   plan,
-  onRemove,
+  onUpdate,
+  pendingRemoveId,
+  onRequestRemove,
+  onConfirmRemove,
+  onCancelRemove,
+  removedConnectors,
+  onRestore,
+  onRestoreAll,
 }: {
-  plan: BriefConnectorPlanItem[];
-  onRemove: (sourceId: string) => void;
+  plan: ConnectorPlanItem[];
+  onUpdate: (sourceId: string, patch: Partial<ConnectorPlanItem>) => void;
+  pendingRemoveId: string | null;
+  onRequestRemove: (sourceId: string) => void;
+  onConfirmRemove: (sourceId: string) => void;
+  onCancelRemove: () => void;
+  removedConnectors: ConnectorPlanItem[];
+  onRestore: (sourceId: string) => void;
+  onRestoreAll: () => void;
 }) {
+  // Which connector rows have their inline config panel expanded.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const toggle = (id: string) =>
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+
   return (
     <SectionCard
       title={`Connector Plan — ${plan.length} sources, ingestion & parsing`}
     >
       <p className="mb-3 text-xs text-ink-muted">
-        Editable — remove any source you don&apos;t want in this engagement;
-        more can be added later from the Connectors catalog.
+        Editable — configure endpoints &amp; keys inline, or remove any source
+        you don&apos;t want in this engagement; more can be added later from the
+        Connectors catalog.
       </p>
       <ul className="divide-y divide-line">
-        {plan.map((c) => (
-          <li key={c.source_id} className="py-3 first:pt-0 last:pb-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={`badge shrink-0 ${CLASS_CHIP[c.source_class] ?? CLASS_CHIP.B}`}>
-                Class {c.source_class}
-              </span>
-              <span className="text-sm font-medium text-ink">{c.publisher}</span>
-              <span className={`badge ${statusChipClass(c.status)}`}>{c.status}</span>
-              <span className="text-xs text-ink-subtle">{c.access}</span>
-              <span className="hidden font-mono text-[11px] text-ink-subtle sm:inline">
-                → {c.raw_table}
-              </span>
-              <RemoveButton label={c.publisher} onRemove={() => onRemove(c.source_id)} />
-            </div>
-            <div className="mt-1.5 grid gap-1 text-xs leading-relaxed text-ink-muted sm:grid-cols-2 sm:gap-4">
-              <p>
-                <span className="font-medium text-ink-subtle">Pulls: </span>
-                {c.pulls}
-              </p>
-              <p>
-                <span className="font-medium text-ink-subtle">Parsing: </span>
-                {c.parsing}
-              </p>
-            </div>
-          </li>
-        ))}
+        {plan.map((c) => {
+          const isPending = pendingRemoveId === c.source_id;
+          const isExpanded = !!expanded[c.source_id];
+          const tier = TIER_NAME[c.source_class] ?? "Secondary";
+          const authType = c.auth_type ?? "none";
+          const showKey = authType === "api_key" || authType === "subscription";
+          const isConfigured = !!c.base_url;
+          const needsConfig = c.status.includes("proposed");
+          const isConnected = c.status.includes("connected");
+
+          // Loss computed from the current plan for the removal warning.
+          const othersSameTable = plan.filter(
+            (x) => x.source_id !== c.source_id && x.raw_table === c.raw_table,
+          ).length;
+          const othersSameClass = plan.filter(
+            (x) =>
+              x.source_id !== c.source_id && x.source_class === c.source_class,
+          ).length;
+          const onlyFeedingTable = othersSameTable === 0;
+          const onlyPrimary = c.source_class === "A" && othersSameClass === 0;
+          const feedingClause = onlyFeedingTable
+            ? `It's the only source feeding ${c.raw_table}.`
+            : `It's one of ${othersSameTable + 1} sources feeding ${c.raw_table}.`;
+
+          return (
+            <li key={c.source_id} className="py-3 first:pt-0 last:pb-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`badge shrink-0 ${CLASS_CHIP[c.source_class] ?? CLASS_CHIP.B}`}>
+                  Class {c.source_class}
+                </span>
+                <span className="text-sm font-medium text-ink">{c.publisher}</span>
+                <span className={`badge ${statusChipClass(c.status)}`}>{c.status}</span>
+                <span className="text-xs text-ink-subtle">{c.access}</span>
+                <span className="hidden font-mono text-[11px] text-ink-subtle sm:inline">
+                  → {c.raw_table}
+                </span>
+                {isConfigured ? (
+                  <span className="badge bg-emerald-50 text-emerald-700">
+                    configured ✓
+                  </span>
+                ) : needsConfig ? (
+                  <span className="text-[11px] italic text-amber-700">
+                    needs an endpoint + key to pull
+                  </span>
+                ) : null}
+                <div className="ml-auto flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => toggle(c.source_id)}
+                    aria-expanded={isExpanded}
+                    className="rounded px-2 py-1 text-xs font-medium text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+                  >
+                    {isExpanded ? "Close" : "Configure"}
+                  </button>
+                  <RemoveButton
+                    label={c.publisher}
+                    onRemove={() => onRequestRemove(c.source_id)}
+                  />
+                </div>
+              </div>
+              <div className="mt-1.5 grid gap-1 text-xs leading-relaxed text-ink-muted sm:grid-cols-2 sm:gap-4">
+                <p>
+                  <span className="font-medium text-ink-subtle">Pulls: </span>
+                  {c.pulls}
+                </p>
+                <p>
+                  <span className="font-medium text-ink-subtle">Parsing: </span>
+                  {c.parsing}
+                </p>
+              </div>
+
+              {/* Inline configuration panel */}
+              {isExpanded && (
+                <div className="mt-3 grid gap-3 rounded-lg border border-line bg-surface-subtle p-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="font-medium text-ink-subtle">Base URL</span>
+                    <input
+                      type="text"
+                      value={c.base_url ?? ""}
+                      onChange={(e) =>
+                        onUpdate(c.source_id, { base_url: e.target.value })
+                      }
+                      placeholder="https://api.host.gov"
+                      className={CONFIG_INPUT_CLS}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="font-medium text-ink-subtle">
+                      Endpoint path
+                    </span>
+                    <input
+                      type="text"
+                      value={c.endpoint_path ?? ""}
+                      onChange={(e) =>
+                        onUpdate(c.source_id, { endpoint_path: e.target.value })
+                      }
+                      placeholder="/v1/resource"
+                      className={CONFIG_INPUT_CLS}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="font-medium text-ink-subtle">Auth type</span>
+                    <select
+                      value={authType}
+                      onChange={(e) =>
+                        onUpdate(c.source_id, { auth_type: e.target.value })
+                      }
+                      className={CONFIG_INPUT_CLS}
+                    >
+                      <option value="none">none</option>
+                      <option value="api_key">api_key</option>
+                      <option value="subscription">subscription</option>
+                    </select>
+                  </label>
+                  {showKey && (
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="font-medium text-ink-subtle">
+                        API key (stored encrypted)
+                      </span>
+                      <input
+                        type="password"
+                        value={c.api_key ?? ""}
+                        onChange={(e) =>
+                          onUpdate(c.source_id, { api_key: e.target.value })
+                        }
+                        placeholder="••••••••••••"
+                        autoComplete="off"
+                        className={CONFIG_INPUT_CLS}
+                      />
+                    </label>
+                  )}
+                  <p className="text-[11px] italic text-ink-subtle sm:col-span-2">
+                    {isConnected
+                      ? "This catalog source is already connected — configuration is optional."
+                      : "Proposed source — add an endpoint and key so cells can pull from it."}
+                  </p>
+                </div>
+              )}
+
+              {/* Removal warning + confirm */}
+              {isPending && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3">
+                  <p className="text-xs font-semibold text-amber-800">
+                    {`Removing ${c.publisher} (Class ${c.source_class} · ${tier}).`}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-amber-700">
+                    {feedingClause}
+                    {onlyFeedingTable &&
+                      " Cells that rely on it can only be sized by lower-tier methods or web-search (LOW confidence)."}
+                    {onlyPrimary &&
+                      " You'll have no Primary evidence — the model can't reach HIGH confidence."}
+                  </p>
+                  <div className="mt-2.5 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onConfirmRemove(c.source_id)}
+                      className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700"
+                    >
+                      Remove anyway
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onCancelRemove}
+                      className="rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-subtle"
+                    >
+                      Keep
+                    </button>
+                  </div>
+                </div>
+              )}
+            </li>
+          );
+        })}
         {plan.length === 0 && (
           <li className="py-3 text-sm italic text-ink-muted">
             All connectors removed — add sources from the Connectors catalog
@@ -200,6 +385,40 @@ function ConnectorPlanSection({
           </li>
         )}
       </ul>
+
+      {/* Restore removed connectors */}
+      {removedConnectors.length > 0 && (
+        <div className="mt-3 rounded-lg border border-dashed border-line bg-surface-subtle px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-ink-muted">
+              {removedConnectors.length} connector
+              {removedConnectors.length === 1 ? "" : "s"} removed
+            </span>
+            <button
+              type="button"
+              onClick={onRestoreAll}
+              className="text-xs font-medium text-brand transition-colors hover:underline"
+            >
+              Restore all
+            </button>
+          </div>
+          <ul className="mt-2 flex flex-wrap gap-2">
+            {removedConnectors.map((rc) => (
+              <li key={rc.source_id}>
+                <button
+                  type="button"
+                  onClick={() => onRestore(rc.source_id)}
+                  title={`Restore ${rc.publisher}`}
+                  className="badge gap-1 bg-surface text-ink-muted transition-colors hover:text-ink"
+                >
+                  {rc.publisher}
+                  <span aria-hidden>↺</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </SectionCard>
   );
 }
@@ -425,7 +644,9 @@ export default function BriefPage() {
   const [yearFrom, setYearFrom] = useState(2026);
   const [yearTo, setYearTo] = useState(2031);
   const [constraints, setConstraints] = useState<string[]>([]);
-  const [connectorPlan, setConnectorPlan] = useState<BriefConnectorPlanItem[]>([]);
+  const [connectorPlan, setConnectorPlan] = useState<ConnectorPlanItem[]>([]);
+  const [removedConnectors, setRemovedConnectors] = useState<ConnectorPlanItem[]>([]);
+  const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
   const [methodPlan, setMethodPlan] = useState<BriefMethodPlanItem[]>([]);
 
   // Create-engagement flow state
@@ -452,6 +673,8 @@ export default function BriefPage() {
       setYearTo(data.years.to);
       setConstraints(data.constraints);
       setConnectorPlan(data.connector_plan ?? []);
+      setRemovedConnectors([]);
+      setPendingRemoveId(null);
       setMethodPlan(data.method_plan ?? []);
       // Reset the create-engagement flow for the fresh interpretation.
       setShowCreateForm(false);
@@ -489,11 +712,54 @@ export default function BriefPage() {
     [],
   );
 
-  const removeConnector = useCallback(
-    (sourceId: string) =>
-      setConnectorPlan((prev) => prev.filter((c) => c.source_id !== sourceId)),
+  // Patch a single connector (by source_id) in place.
+  const updateConnector = useCallback(
+    (sourceId: string, patch: Partial<ConnectorPlanItem>) =>
+      setConnectorPlan((prev) =>
+        prev.map((c) => (c.source_id === sourceId ? { ...c, ...patch } : c)),
+      ),
     [],
   );
+
+  // Removal is two-step: request (show warning) → confirm/cancel.
+  const requestRemoveConnector = useCallback(
+    (sourceId: string) => setPendingRemoveId(sourceId),
+    [],
+  );
+  const cancelRemoveConnector = useCallback(() => setPendingRemoveId(null), []);
+  const confirmRemoveConnector = useCallback(
+    (sourceId: string) => {
+      const item = connectorPlan.find((c) => c.source_id === sourceId);
+      setConnectorPlan((prev) => prev.filter((c) => c.source_id !== sourceId));
+      if (item) {
+        setRemovedConnectors((prev) =>
+          prev.some((x) => x.source_id === sourceId) ? prev : [...prev, item],
+        );
+      }
+      setPendingRemoveId(null);
+    },
+    [connectorPlan],
+  );
+
+  // Restore removed connectors back into the plan.
+  const restoreConnector = useCallback(
+    (sourceId: string) => {
+      const item = removedConnectors.find((c) => c.source_id === sourceId);
+      if (!item) return;
+      setConnectorPlan((prev) =>
+        prev.some((x) => x.source_id === sourceId) ? prev : [...prev, item],
+      );
+      setRemovedConnectors((prev) => prev.filter((c) => c.source_id !== sourceId));
+    },
+    [removedConnectors],
+  );
+  const restoreAllConnectors = useCallback(() => {
+    setConnectorPlan((prev) => {
+      const existing = new Set(prev.map((c) => c.source_id));
+      return [...prev, ...removedConnectors.filter((c) => !existing.has(c.source_id))];
+    });
+    setRemovedConnectors([]);
+  }, [removedConnectors]);
 
   const removeMethod = useCallback(
     (methodCode: string) =>
@@ -757,7 +1023,17 @@ export default function BriefPage() {
             <ExecutionPlanSection steps={result.execution_plan!} />
           )}
           {(result.connector_plan?.length ?? 0) > 0 && (
-            <ConnectorPlanSection plan={connectorPlan} onRemove={removeConnector} />
+            <ConnectorPlanSection
+              plan={connectorPlan}
+              onUpdate={updateConnector}
+              pendingRemoveId={pendingRemoveId}
+              onRequestRemove={requestRemoveConnector}
+              onConfirmRemove={confirmRemoveConnector}
+              onCancelRemove={cancelRemoveConnector}
+              removedConnectors={removedConnectors}
+              onRestore={restoreConnector}
+              onRestoreAll={restoreAllConnectors}
+            />
           )}
           {connectorPlan.length > 0 && (
             <MethodologySection plan={connectorPlan} />
