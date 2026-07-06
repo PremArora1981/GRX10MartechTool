@@ -68,6 +68,17 @@ from backend.app.usage_alert import UsageAlertMiddleware  # noqa: E402
 app.add_middleware(UsageAlertMiddleware)
 
 
+@app.on_event("startup")
+async def _start_usage_digest_scheduler() -> None:
+    """Launch the always-on daily usage-digest scheduler (in-process; the web
+    service is a paid, always-on plan). Inert if email is unconfigured."""
+    import asyncio
+
+    from backend.app.daily_usage_digest import scheduler_loop
+
+    asyncio.create_task(scheduler_loop())
+
+
 # --------------------------------------------------------------------------- #
 # Health endpoint
 # --------------------------------------------------------------------------- #

@@ -133,7 +133,57 @@ def build_and_send(hours: int = 24) -> bool:
     return send_html(subject, html)
 
 
+def _already_sent_today() -> bool:
+    """True if today's digest row already exists (idempotency across restarts)."""
+    session = next(get_session())
+    try:
+        return session.execute(
+            text("SELECT 1 FROM digest_log WHERE sent_date = current_date")
+        ).first() is not None
+    except Exception:  # noqa: BLE001 — table may not exist yet
+        return False
+    finally:
+        session.close()
+
+
+def _mark_sent_today() -> None:
+    session = next(get_session())
+    try:
+        session.execute(
+            text("INSERT INTO digest_log (sent_date) VALUES (current_date) ON CONFLICT DO NOTHING"))
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mark_sent failed: %s", exc)
+    finally:
+        session.close()
+
+
+async def scheduler_loop() -> None:
+    """In-process daily scheduler for the API web service (always-on, paid plan).
+
+    Every ~30 min: once the UTC hour reaches ALERT_DIGEST_HOUR (default 01:00) and
+    today's digest hasn't been sent, build + send it, then record the day so a
+    restart won't re-send. Missed sends (send failure) retry on the next tick.
+    """
+    import asyncio
+    target_hour = int(os.getenv("ALERT_DIGEST_HOUR", "1"))
+    logger.info("daily digest scheduler started (target %02d:00 UTC)", target_hour)
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            if now.hour >= target_hour and not _already_sent_today():
+                sent = await asyncio.to_thread(build_and_send)
+                if sent:
+                    _mark_sent_today()
+                    logger.info("daily digest sent + recorded for %s", now.date())
+        except Exception as exc:  # noqa: BLE001 — never let the loop die
+            logger.warning("digest scheduler tick error: %s", exc)
+        await asyncio.sleep(int(os.getenv("ALERT_DIGEST_CHECK_SECONDS", "1800")))
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     ok = build_and_send()
+    if ok:
+        _mark_sent_today()
     print("digest sent" if ok else "digest not sent (unconfigured, out of window, or send failed)")

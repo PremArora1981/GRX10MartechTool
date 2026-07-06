@@ -12,3 +12,10 @@ CREATE TABLE IF NOT EXISTS usage_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events (ts);
+
+-- One row per day a digest email was sent — makes the daily send idempotent
+-- across dyno restarts (the in-process scheduler claims the day here first).
+CREATE TABLE IF NOT EXISTS digest_log (
+    sent_date  date PRIMARY KEY,
+    sent_at    timestamptz NOT NULL DEFAULT now()
+);
