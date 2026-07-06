@@ -582,6 +582,13 @@ export const api = {
       `/cells/${cellId}/add-suggested-source`, { method: "POST", json: body },
     ),
 
+  /** Re-pull this cell's mapped connectors and re-size it in place. */
+  resizeCell: (cellId: number) =>
+    apiRequest<{
+      cell_id: number; tam_revenue_usd_m: number | null; confidence: string | null;
+      sources_pulled: string[]; messages: string[]; detail: string;
+    }>(`/cells/${cellId}/resize`, { method: "POST" }),
+
   // ── Scope editing (add/remove subcategories + geographies) ─────────────────
   addSubcategory: (
     engagementId: string,

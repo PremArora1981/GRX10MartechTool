@@ -87,10 +87,19 @@ def run_refresh(engagement_id: str) -> dict:
 
 
 def _refresh_source(engagement_id, src, get_connector, resize_fn, cols) -> dict:
+    """Pull + re-size one source. Returns landed/resized/ok plus a human ``reason``
+    (e.g. 'needs an API key') so callers can guide the user."""
     import time
     raw_table = src.get("raw_table")
+    publisher = src.get("publisher") or src.get("source_id")
     if not raw_table:
-        return {"landed": 0, "resized": 0, "ok": False}
+        return {"landed": 0, "resized": 0, "ok": False, "reason": "no raw table configured"}
+    # A source that declares auth but has no stored credential can't authenticate.
+    auth = (src.get("auth") or "none").lower()
+    needs_key = auth not in ("", "none", "no", "public") and not src.get("auth_secret_ref")
+    if needs_key:
+        return {"landed": 0, "resized": 0, "ok": False,
+                "reason": f"{publisher} needs an API key — add it on the Connectors page."}
     session = next(get_session())
     try:
         credential = None
@@ -98,13 +107,20 @@ def _refresh_source(engagement_id, src, get_connector, resize_fn, cols) -> dict:
             credential = credential_service.retrieve(session, cred_ref=src["auth_secret_ref"])
         connector = get_connector(src, credential)
         if connector is None:
-            return {"landed": 0, "resized": 0, "ok": False}
+            return {"landed": 0, "resized": 0, "ok": False,
+                    "reason": f"{publisher} has no runnable connector."}
         try:
             probe = connector.probe()
-            if getattr(probe, "status", "UNREACHABLE") != "OK":
-                return {"landed": 0, "resized": 0, "ok": False}
-        except Exception:  # noqa: BLE001
-            return {"landed": 0, "resized": 0, "ok": False}
+            pstatus = getattr(probe, "status", "UNREACHABLE")
+            pdetail = getattr(probe, "detail", "")
+            if pstatus != "OK":
+                hint = (" — check the API key" if pstatus in ("AUTH_FAILED", "QUOTA_EXHAUSTED")
+                        else " — check the endpoint URL")
+                return {"landed": 0, "resized": 0, "ok": False,
+                        "reason": f"{publisher} probe {pstatus}{hint}. {pdetail[:80]}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"landed": 0, "resized": 0, "ok": False,
+                    "reason": f"{publisher} unreachable: {str(exc)[:80]}"}
 
         taxonomy = [dict(r._mapping) for r in session.execute(
             text("SELECT sc.subcategory_id, sc.name, sc.hs_codes, sc.regulatory_codes, f.name AS family "
@@ -145,10 +161,17 @@ def _refresh_source(engagement_id, src, get_connector, resize_fn, cols) -> dict:
             resized = resize_fn(session, engagement_id, src["source_id"], raw_table,
                                 src.get("class") or "B")
         session.commit()
-        return {"landed": landed, "resized": resized, "ok": True}
+        if not landed:
+            reason = f"{publisher} returned no new rows for this scope."
+        elif not resized:
+            reason = f"{publisher} pulled {landed} rows but none mapped to a cell (check HS/segment match)."
+        else:
+            reason = f"{publisher}: pulled {landed} rows, re-sized {resized} cell(s)."
+        return {"landed": landed, "resized": resized, "ok": True, "reason": reason}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         logger.warning("refresh source %s failed: %s", src.get("source_id"), exc)
-        return {"landed": 0, "resized": 0, "ok": False}
+        return {"landed": 0, "resized": 0, "ok": False,
+                "reason": f"{publisher} error: {str(exc)[:80]}"}
     finally:
         session.close()

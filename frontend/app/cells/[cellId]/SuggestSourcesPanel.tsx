@@ -173,6 +173,33 @@ export function SuggestSourcesPanel({
   const [result, setResult] = useState<SuggestResult | null>(null);
   const [addStates, setAddStates] = useState<Record<number, AddState>>({});
 
+  // "Refresh this cell" — re-pull the cell's mapped connectors and re-size it.
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<
+    Awaited<ReturnType<typeof api.resizeCell>> | null
+  >(null);
+
+  async function runRefresh() {
+    setRefreshing(true);
+    setRefreshResult(null);
+    try {
+      const res = await api.resizeCell(cellId);
+      setRefreshResult(res);
+      // If the number changed, reload so the estimates table + TAM reflect it.
+      if (res.sources_pulled.length > 0) {
+        setTimeout(() => window.location.reload(), 1200);
+      }
+    } catch (err) {
+      setRefreshResult({
+        cell_id: cellId, tam_revenue_usd_m: null, confidence: null,
+        sources_pulled: [], messages: [],
+        detail: err instanceof ApiError ? err.message : "Refresh failed — please try again.",
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function runSuggest() {
     setLoading(true);
     setError(null);
@@ -240,17 +267,52 @@ export function SuggestSourcesPanel({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={runSuggest}
-          disabled={loading}
-          className={`${
-            hasEstimates ? "btn-secondary" : "btn-primary"
-          } whitespace-nowrap text-sm disabled:cursor-not-allowed disabled:opacity-60`}
-        >
-          {loading ? "Finding sources…" : cta}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={runRefresh}
+            disabled={refreshing}
+            title="Re-pull this cell's connectors and re-size it from the fresh data"
+            className="btn-secondary whitespace-nowrap text-sm disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {refreshing ? "Refreshing cell…" : "Refresh this cell"}
+          </button>
+          <button
+            type="button"
+            onClick={runSuggest}
+            disabled={loading}
+            className={`${
+              hasEstimates ? "btn-secondary" : "btn-primary"
+            } whitespace-nowrap text-sm disabled:cursor-not-allowed disabled:opacity-60`}
+          >
+            {loading ? "Finding sources…" : cta}
+          </button>
+        </div>
       </div>
+
+      {/* Refresh-this-cell result: outcome + per-source guidance (keys/auth/endpoints) */}
+      {refreshResult && (
+        <div
+          className={`card mb-3 p-4 text-sm ${
+            refreshResult.sources_pulled.length > 0
+              ? "border-l-4 border-l-emerald-500"
+              : "border-l-4 border-l-amber-400"
+          }`}
+          role="status"
+        >
+          <p className="text-ink">{refreshResult.detail}</p>
+          {refreshResult.messages.length > 0 && (
+            <ul className="mt-2 space-y-1 text-xs text-ink-muted">
+              {refreshResult.messages.map((m, i) => (
+                <li key={i} className="flex gap-1.5">
+                  <span className="text-ink-subtle">•</span>
+                  <span>{m}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Loading state — this is a 20–40s LLM call */}
       {loading && (

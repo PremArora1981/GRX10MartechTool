@@ -204,6 +204,94 @@ def _fallback_suggest(ctx: dict) -> list[SuggestedSource]:
     ]
 
 
+class ResizeCellOut(BaseModel):
+    cell_id: int
+    tam_revenue_usd_m: float | None
+    confidence: str | None
+    sources_pulled: list[str]
+    messages: list[str]           # per-source outcomes / guidance (keys, auth, endpoints)
+    detail: str
+
+
+# Raw tables whose landed data can be turned into a cell estimate (mirrors
+# connectors._RESIZE_METHOD).
+_RESIZE_TABLES = [
+    "raw_trade_flows", "raw_industry_reports", "raw_regulatory",
+    "raw_filings", "raw_external_metrics",
+]
+_MAX_CELL_SOURCES = 4
+
+
+@router.post("/{cell_id}/resize", response_model=ResizeCellOut,
+             summary="Refresh this cell: re-pull its mapped connectors and re-size it")
+def resize_cell(
+    cell_id: int,
+    db: DbSession,
+    engagement_id: EngagementDep,
+    _user: CurrentUserDep,
+) -> ResizeCellOut:
+    """Re-pull the enabled connectors that can feed THIS cell and re-size it in
+    place — so after adding a source + key you can refresh the cell without
+    leaving it. Reuses the same pull + re-size path as the connector "Pull data
+    now" / engagement "Refresh data"; runs synchronously (bounded per source)."""
+    ctx = _load_cell_ctx(db, cell_id, engagement_id)
+    # Lazy imports to avoid a circular import at module load.
+    from connectors.registry import discover, get_connector
+    from backend.app.routers.connectors import _resize_after_pull, _RAW_TABLE_COLUMNS
+    from backend.app.services import refresh_job
+    discover()
+
+    srcs = [dict(r) for r in db.execute(
+        text(
+            "SELECT source_id, publisher, url_pattern, auth, auth_secret_ref, class, "
+            "       connector, raw_table, access_method, notes "
+            "FROM sources WHERE engagement_id = :e AND enabled = TRUE "
+            "  AND connector IS NOT NULL AND connector <> 'web_search' "
+            "  AND raw_table = ANY(:tbls) "
+            "ORDER BY class LIMIT :lim"
+        ),
+        {"e": engagement_id, "tbls": _RESIZE_TABLES, "lim": _MAX_CELL_SOURCES},
+    ).mappings().all()]
+
+    pulled: list[str] = []
+    messages: list[str] = []
+    needs_key = False
+    for s in srcs:
+        cols = set(_RAW_TABLE_COLUMNS.get(s.get("raw_table"), []))
+        r = refresh_job._refresh_source(engagement_id, s, get_connector,
+                                        _resize_after_pull, cols)
+        reason = r.get("reason") or ""
+        if reason:
+            messages.append(reason)
+        if "needs an API key" in reason or "check the API key" in reason:
+            needs_key = True
+        if r.get("resized"):
+            pulled.append(s["publisher"])
+
+    row = db.execute(
+        text("SELECT tam_revenue_usd_m, confidence FROM cells "
+             "WHERE cell_id = :c AND engagement_id = :e"),
+        {"c": cell_id, "e": engagement_id},
+    ).mappings().first()
+    tam = float(row["tam_revenue_usd_m"]) if row and row["tam_revenue_usd_m"] is not None else None
+    conf = row["confidence"] if row else None
+
+    if pulled:
+        detail = (f"Re-sized this cell from {len(pulled)} live source(s): {', '.join(pulled)}. "
+                  f"Confidence is now {conf}.")
+    elif not srcs:
+        detail = ("No live connector feeds this cell yet. Use 'Suggest data sources' below → "
+                  "add one → enter its API key on the Connectors page → then Refresh this cell.")
+    elif needs_key:
+        detail = ("A connector is configured but needs an API key. Open the Connectors page, "
+                  "enter the key for the source(s) below, then Refresh this cell again.")
+    else:
+        detail = ("Connectors ran but returned no usable data for this cell — see the per-source "
+                  "notes below (unreachable endpoint, or no rows matched this segment).")
+    return ResizeCellOut(cell_id=cell_id, tam_revenue_usd_m=tam, confidence=conf,
+                         sources_pulled=pulled, messages=messages, detail=detail)
+
+
 @router.post("/{cell_id}/add-suggested-source", response_model=AddSuggestedOut,
              summary="Add a suggested source to this engagement (then add a key + pull)")
 def add_suggested_source(
