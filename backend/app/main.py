@@ -61,6 +61,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Client-usage email alert (alpha). Inert unless ZEPTOMAIL_TOKEN/ALERT_EMAIL_FROM
+# are configured; never blocks or slows a request.
+from backend.app.usage_alert import UsageAlertMiddleware  # noqa: E402
+
+app.add_middleware(UsageAlertMiddleware)
+
 
 # --------------------------------------------------------------------------- #
 # Health endpoint
