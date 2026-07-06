@@ -175,10 +175,16 @@ def _seed_one_cell(engagement_id: str, ws_source: str, c: dict) -> bool:
 def _size_cell_via_websearch(subcat: str, country: str, year: int) -> tuple[float | None, str | None, str | None]:
     """One agentic web search → (market_size_usd_millions, source_url, snippet)."""
     prompt = (
-        f"Search the web for the market size of '{subcat}' in {country} for the year {year} "
-        "(or the closest available year). Return ONLY a JSON object, no prose:\n"
-        '{"market_size_usd_millions": <number or null>, "source_url": "<url>", '
-        '"snippet": "<short verbatim quote with the figure>", "year_found": <int>}'
+        f"Estimate the market size (USD millions) of '{subcat}' in {country} for {year}. "
+        "First search the web for a published figure. If you find one, use it. If NO clean "
+        "published figure exists for this exact segment, DO NOT return null — instead give your "
+        "best-reasoned estimate derived from adjacent data (the parent/total market, comparable "
+        "countries, typical segment share, and growth rates), and say so. Always return a number.\n"
+        "Return ONLY a JSON object, no prose:\n"
+        '{"market_size_usd_millions": <number, never null>, "basis": "<published|estimated>", '
+        '"source_url": "<url, or the closest supporting source>", '
+        '"snippet": "<the figure with its source, or a one-line note on how you estimated it>", '
+        '"year_found": <int>}'
     )
     resp = httpx.post(
         "https://api.anthropic.com/v1/messages",
@@ -213,7 +219,11 @@ def _size_cell_via_websearch(subcat: str, country: str, year: int) -> tuple[floa
         usd = float(usd)
     except (TypeError, ValueError):
         return None, data.get("source_url"), data.get("snippet")
-    return usd, data.get("source_url"), (data.get("snippet") or "")[:500]
+    basis = (data.get("basis") or "").lower()
+    snippet = (data.get("snippet") or "")[:480]
+    if basis == "estimated":
+        snippet = f"[modeled estimate] {snippet}"
+    return usd, data.get("source_url"), snippet
 
 
 def _write_cell_estimate(
