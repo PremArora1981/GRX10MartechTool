@@ -67,7 +67,9 @@ def _is_real_browser_hit(path: str, ua: str) -> bool:
     return "mozilla/" in ua
 
 
-def _send_email(path: str, ip: str, ua: str, ts: str) -> None:
+def send_html(subject: str, html: str) -> bool:
+    """Send one HTML email via ZeptoMail. Returns True on success. Shared by the
+    real-time alert and the daily digest. No-op (False) if unconfigured."""
     global _warned_unconfigured
     token = os.getenv("ZEPTOMAIL_TOKEN")
     frm = os.getenv("ALERT_EMAIL_FROM")
@@ -75,9 +77,36 @@ def _send_email(path: str, ip: str, ua: str, ts: str) -> None:
     url = os.getenv("ZEPTOMAIL_API_URL", "https://api.zeptomail.in/v1.1/email")
     if not token or not frm:
         if not _warned_unconfigured:
-            logger.warning("usage alert: ZEPTOMAIL_TOKEN / ALERT_EMAIL_FROM not set — alerts disabled")
+            logger.warning("email: ZEPTOMAIL_TOKEN / ALERT_EMAIL_FROM not set — email disabled")
             _warned_unconfigured = True
-        return
+        return False
+    try:
+        r = httpx.post(
+            url,
+            headers={
+                "Authorization": f"Zoho-enczapikey {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json={
+                "from": {"address": frm},
+                "to": [{"email_address": {"address": to}}],
+                "subject": subject,
+                "htmlbody": html,
+            },
+            timeout=15.0,
+        )
+        if r.status_code >= 300:
+            logger.warning("email non-2xx: %s %s", r.status_code, r.text[:200])
+            return False
+        logger.info("email sent to %s: %s", to, subject)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("email send failed: %s", exc)
+        return False
+
+
+def _send_email(path: str, ip: str, ua: str, ts: str) -> None:
     window = _debounce_seconds() // 60
     body = (
         "<p><strong>Someone is using the GRX10 Market Research app.</strong></p>"
@@ -90,38 +119,41 @@ def _send_email(path: str, ip: str, ua: str, ts: str) -> None:
         f"<p style='color:#888'>You'll get at most one of these per {window} min of activity. "
         "The app is anonymous, so this fires on any real browser session.</p>"
     )
+    send_html("GRX10 alpha — client is using the app", body)
+
+
+def _log_event(ip: str, path: str, ua: str) -> None:
+    """Persist one usage row (best-effort) for the daily digest."""
     try:
-        r = httpx.post(
-            url,
-            headers={
-                "Authorization": f"Zoho-enczapikey {token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json={
-                "from": {"address": frm},
-                "to": [{"email_address": {"address": to}}],
-                "subject": "GRX10 alpha — client is using the app",
-                "htmlbody": body,
-            },
-            timeout=10.0,
-        )
-        if r.status_code >= 300:
-            logger.warning("usage alert email non-2xx: %s %s", r.status_code, r.text[:200])
-        else:
-            logger.info("usage alert email sent to %s", to)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("usage alert email failed: %s", exc)
+        from sqlalchemy import text
+        from backend.app.db import get_session
+        session = next(get_session())
+        try:
+            session.execute(
+                text("INSERT INTO usage_events (ip, path, user_agent) VALUES (:ip, :p, :ua)"),
+                {"ip": ip, "p": path[:300], "ua": ua[:400]},
+            )
+            session.commit()
+        finally:
+            session.close()
+    except Exception as exc:  # noqa: BLE001 — logging must never break a request
+        logger.debug("usage log insert failed: %s", exc)
 
 
 class UsageAlertMiddleware(BaseHTTPMiddleware):
-    """Fire a debounced 'client is active' email on real browser requests."""
+    """Log every real browser request + fire a debounced 'client is active' email."""
 
     async def dispatch(self, request, call_next):
         try:
             path = request.url.path
             ua = request.headers.get("user-agent", "")
             if _is_real_browser_hit(path, ua):
+                xff = request.headers.get("x-forwarded-for", "")
+                ip = (xff.split(",")[0].strip() if xff
+                      else (request.client.host if request.client else "?"))
+                # Log every real hit (for the daily digest) on a background thread.
+                threading.Thread(target=_log_event, args=(ip, path, ua), daemon=True).start()
+                # Debounced real-time email.
                 now = time.time()
                 fire = False
                 global _last_alert
@@ -130,9 +162,6 @@ class UsageAlertMiddleware(BaseHTTPMiddleware):
                         _last_alert = now
                         fire = True
                 if fire:
-                    xff = request.headers.get("x-forwarded-for", "")
-                    ip = (xff.split(",")[0].strip() if xff
-                          else (request.client.host if request.client else "?"))
                     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
                     threading.Thread(
                         target=_send_email, args=(path, ip, ua, ts), daemon=True
