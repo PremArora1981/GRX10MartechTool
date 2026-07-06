@@ -608,6 +608,10 @@ export const api = {
     apiRequest<EngagementPopulateResult>(
       `/engagements/${encodeURIComponent(engagementId)}/populate-players`, { method: "POST" },
     ),
+  refreshEngagement: (engagementId: string) =>
+    apiRequest<EngagementPopulateResult>(
+      `/engagements/${encodeURIComponent(engagementId)}/refresh`, { method: "POST" },
+    ),
   engagementStatus: (engagementId: string) =>
     apiRequest<{
       engagement_id: string; cells_total: number; cells_sized: number;

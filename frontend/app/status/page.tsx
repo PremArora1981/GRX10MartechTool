@@ -33,6 +33,7 @@ import type {
 } from "@/lib/types";
 
 import { StatusRefreshButton } from "./StatusRefreshButton";
+import { RefreshDataButton } from "./RefreshDataButton";
 import { StatusSourceTable } from "./StatusSourceTable";
 
 export const metadata: Metadata = { title: "Status" };
@@ -388,6 +389,7 @@ export default async function StatusPage(): Promise<ReactNode> {
               </span>
             )}
             <StatusRefreshButton />
+            <RefreshDataButton />
           </div>
         }
       />

@@ -24,7 +24,7 @@ from sqlalchemy import text
 
 from backend.app.deps import CurrentUserDep, DbSession, EngagementDep, DEFAULT_ENGAGEMENT_ID
 from backend.app.schemas import EngagementCreate, EngagementOut
-from backend.app.services import engagement_materialize, seed_job, players_job
+from backend.app.services import engagement_materialize, seed_job, players_job, refresh_job
 
 logger = logging.getLogger("grx10.routers.engagements")
 
@@ -319,6 +319,28 @@ def delete_engagement(engagement_id: str, db: DbSession, _user: CurrentUserDep,
     response.set_cookie(_COOKIE, DEFAULT_ENGAGEMENT_ID, max_age=_COOKIE_MAX_AGE,
                         samesite="lax", path="/")
     return {"deleted": engagement_id}
+
+
+@router.post("/{engagement_id}/refresh", response_model=PopulateResult,
+             summary="Refresh data: re-pull all enabled connectors and re-size cells")
+def refresh_engagement(engagement_id: str, db: DbSession, _user: CurrentUserDep,
+                       background: BackgroundTasks) -> PopulateResult:
+    """Bring the model up to date — run after enabling new connectors, or anytime.
+
+    Re-pulls every enabled, runnable connector in the engagement and re-sizes the
+    cells from the fresh data (web-search-only sources are handled by populate).
+    Runs in the background; watch the cells fill / confidence rise on refresh.
+    """
+    if db.execute(text("SELECT 1 FROM engagements WHERE engagement_id=:e AND status='active'"),
+                  {"e": engagement_id}).first() is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Engagement not found or archived.")
+    n = db.execute(
+        text("SELECT COUNT(*) FROM sources WHERE engagement_id=:e AND enabled=TRUE "
+             "AND connector IS NOT NULL AND connector <> 'web_search'"),
+        {"e": engagement_id}).scalar_one()
+    res = refresh_job.launch_refresh(engagement_id, background=background)
+    return PopulateResult(engagement_id=engagement_id, launched=res["launched"],
+                          mode=res["mode"], planned_cells=int(n), detail=res["detail"])
 
 
 @router.post("/{engagement_id}/populate-players", response_model=PopulateResult,
