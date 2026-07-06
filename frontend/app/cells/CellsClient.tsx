@@ -29,6 +29,7 @@ import {
   TamBand,
 } from "@/components";
 import type { Column } from "@/components/DataTable";
+import ScopeEditor from "./ScopeEditor";
 import type {
   CellView,
   Confidence,
@@ -373,6 +374,9 @@ export default function CellsClient({
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
+      {/* ── Scope editor (add/remove subcategories & geographies) ───────── */}
+      <ScopeEditor subcategories={subcategories} geographies={geographies} />
+
       {/* ── Filter bar ─────────────────────────────────────────────────── */}
       <div className="card p-4">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

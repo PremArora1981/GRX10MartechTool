@@ -1811,14 +1811,133 @@ def pull_connector(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY,
                             detail=f"Pull failed: {str(exc)[:200]}") from exc
 
+    # Turn the landed data into real cell estimates (upgrade from web-search LOW
+    # toward primary/secondary confidence) where we can map it to cells.
+    resized = 0
+    if landed:
+        try:
+            resized = _resize_after_pull(db, engagement_id, source_id, raw_table,
+                                         row.get("class") or "B")
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 — sizing is best-effort
+            db.rollback()
+            logger.warning("resize after pull failed for %s: %s", source_id, exc)
+
     more = " (partial — pull again for more)" if truncated else ""
+    resize_note = f" Re-sized {resized} cell(s) from the new data." if resized else ""
     return PullOut(
         source_id=source_id, raw_table=raw_table, probe_status=pstatus,
         rows_landed=landed, rows_normalized=normalized,
-        detail=(f"Landed {landed} new rows ({normalized} typed) into {raw_table}{more}. "
+        detail=(f"Landed {landed} new rows ({normalized} typed) into {raw_table}{more}.{resize_note} "
                 "Drill any cell using this source to see the raw evidence."
                 if landed else "No new rows (endpoint returned nothing new)."),
     )
+
+
+# Method + gross-up assumptions for turning landed rows into cell estimates.
+_IMPORT_GROSS_UP = 1.0 / 0.55  # apparent market ≈ imports / import-share
+_RESIZE_METHOD = {
+    "raw_trade_flows": "comtrade_hs4_import",
+    "raw_industry_reports": "top_down_industry_allocation",
+    "raw_regulatory": "regulatory_count_unit_price",
+}
+
+
+def _resize_after_pull(db: Session, engagement_id: str, source_id: str,
+                       raw_table: str, source_class: str) -> int:
+    """Size the engagement's cells from freshly-landed rows for *source_id*.
+
+    Handles the common primary/secondary shapes (trade flows, industry reports).
+    Writes a ``cell_triangulation`` row per sized cell, updates the cell's TAM +
+    confidence from the active validation profile, and refreshes the matview.
+    Returns the number of cells (re)sized.
+    """
+    method = _RESIZE_METHOD.get(raw_table)
+    if method is None:
+        return 0
+
+    cells = db.execute(
+        text(
+            "SELECT c.cell_id, sc.name AS subcat, sc.hs_codes, g.country, c.year "
+            "FROM cells c JOIN taxonomy_subcategories sc ON sc.subcategory_id = c.subcategory_id "
+            "JOIN geographies g ON g.geography_id = c.geography_id "
+            "WHERE c.engagement_id = :e"
+        ),
+        {"e": engagement_id},
+    ).mappings().all()
+
+    sized = 0
+    for c in cells:
+        est: float | None = None
+        if raw_table == "raw_trade_flows" and c["hs_codes"]:
+            # Sum import value for this cell's HS codes + reporter country.
+            hs_like = [h[:4] for h in c["hs_codes"]]
+            val = db.execute(
+                text(
+                    "SELECT COALESCE(SUM(value_usd),0) FROM raw_trade_flows "
+                    "WHERE source_id = :sid AND engagement_id = :e AND reporter = :country "
+                    "  AND flow IN ('M','Import') "
+                    "  AND (" + " OR ".join(f"hs_code LIKE :h{i}" for i in range(len(hs_like))) + ")"
+                ),
+                {"sid": source_id, "e": engagement_id, "country": c["country"],
+                 **{f"h{i}": h + "%" for i, h in enumerate(hs_like)}},
+            ).scalar_one()
+            if val and float(val) > 0:
+                est = float(val) / 1e6 * _IMPORT_GROSS_UP
+        elif raw_table == "raw_industry_reports":
+            val = db.execute(
+                text(
+                    "SELECT tam_usd FROM raw_industry_reports "
+                    "WHERE source_id = :sid AND engagement_id = :e "
+                    "  AND (market = :m OR market ILIKE :sub) AND tam_usd IS NOT NULL "
+                    "ORDER BY accessed_at DESC LIMIT 1"
+                ),
+                {"sid": source_id, "e": engagement_id,
+                 "m": f"{c['subcat']} - {c['country']}", "sub": f"%{c['subcat']}%"},
+            ).scalar()
+            if val:
+                est = float(val) / 1e6
+        if est is None or est <= 0:
+            continue
+        db.execute(
+            text(
+                "INSERT INTO cell_triangulation (cell_id, method_code, estimate_usd_m, "
+                "  source_id, engagement_id, notes) "
+                "VALUES (:cid, :m, :est, :sid, :e, :notes) "
+                "ON CONFLICT (cell_id, method_code, source_id) "
+                "DO UPDATE SET estimate_usd_m = EXCLUDED.estimate_usd_m"
+            ),
+            {"cid": c["cell_id"], "m": method, "est": round(est, 2), "sid": source_id,
+             "e": engagement_id, "notes": f"{method} from live {raw_table} pull"},
+        )
+        sized += 1
+
+    if sized:
+        # Recompute the matview and project confidence onto the affected cells.
+        with db.connection().engine.connect() as raw:
+            raw.execution_options(isolation_level="AUTOCOMMIT").execute(
+                text("REFRESH MATERIALIZED VIEW cell_triangulation_summary"))
+        # TAM = median of a cell's estimates; confidence from the matview verdict.
+        db.execute(
+            text(
+                "UPDATE cells c SET "
+                "  tam_revenue_usd_m = sub.med, "
+                "  tam_low_usd_m = ROUND(sub.med * 0.85, 2), "
+                "  tam_high_usd_m = ROUND(sub.med * 1.15, 2), "
+                "  status = 'active', "
+                "  confidence = CASE WHEN s.qualifies_high THEN 'high' "
+                "                    WHEN s.qualifies_medium THEN 'medium' ELSE 'low' END, "
+                "  confidence_rationale = 'Sized from live connector pull; confidence per active profile.' "
+                "FROM ( "
+                "  SELECT cell_id, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY estimate_usd_m) med "
+                "  FROM cell_triangulation WHERE engagement_id = :e GROUP BY cell_id "
+                ") sub "
+                "JOIN cell_triangulation_summary s ON s.cell_id = sub.cell_id "
+                "WHERE c.cell_id = sub.cell_id AND c.engagement_id = :e"
+            ),
+            {"e": engagement_id},
+        )
+    return sized
 
 
 @router.post(

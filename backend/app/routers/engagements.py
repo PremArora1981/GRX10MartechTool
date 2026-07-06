@@ -233,3 +233,146 @@ def populate_engagement(
         planned_cells=int(n_planned),
         detail=result["detail"],
     )
+
+
+# ─── Scope editing: add/remove subcategories + geographies (rebuilds cells) ────
+
+class AddSubcategoryIn(BaseModel):
+    family: str
+    name: str
+    hs_codes: list[str] = []
+    regulatory_codes: list[str] = []
+
+
+class AddGeographyIn(BaseModel):
+    country: str
+    segment: str = "DOMESTIC"
+
+
+class ScopeEditOut(BaseModel):
+    engagement_id: str
+    cells_added: int = 0
+    cells_removed: int = 0
+    detail: str
+
+
+def _next(db, table: str, col: str) -> int:
+    return int(db.execute(text(f"SELECT COALESCE(MAX({col}),0)+1 FROM {table}")).scalar_one())
+
+
+def _years(db, engagement_id: str) -> list[int]:
+    return [r[0] for r in db.execute(
+        text("SELECT DISTINCT year FROM cells WHERE engagement_id = :e ORDER BY year"),
+        {"e": engagement_id}).all()] or [2026, 2031]
+
+
+@router.post("/{engagement_id}/subcategories", response_model=ScopeEditOut,
+             summary="Add a subcategory (creates its cells across all geographies × years)")
+def add_subcategory(engagement_id: str, body: AddSubcategoryIn, db: DbSession,
+                    _user: CurrentUserDep) -> ScopeEditOut:
+    _require_active(db, engagement_id)
+    fam = db.execute(
+        text("SELECT family_id FROM taxonomy_families WHERE engagement_id=:e AND name=:n"),
+        {"e": engagement_id, "n": body.family}).scalar()
+    if fam is None:
+        fam = _next(db, "taxonomy_families", "family_id")
+        db.execute(text("INSERT INTO taxonomy_families (family_id,name,version,engagement_id) "
+                        "VALUES (:f,:n,1,:e)"), {"f": fam, "n": body.family, "e": engagement_id})
+    sid = _next(db, "taxonomy_subcategories", "subcategory_id")
+    db.execute(text("INSERT INTO taxonomy_subcategories "
+                    "(subcategory_id,family_id,name,hs_codes,regulatory_codes,version,engagement_id) "
+                    "VALUES (:s,:f,:n,:hs,:reg,1,:e)"),
+               {"s": sid, "f": fam, "n": body.name, "hs": body.hs_codes,
+                "reg": body.regulatory_codes, "e": engagement_id})
+    geos = [r[0] for r in db.execute(
+        text("SELECT geography_id FROM geographies WHERE engagement_id=:e"), {"e": engagement_id})]
+    years = _years(db, engagement_id)
+    added = 0
+    for gid in geos:
+        for yr in years:
+            db.execute(text("INSERT INTO cells (subcategory_id,geography_id,year,status,engagement_id) "
+                            "VALUES (:s,:g,:y,'planned',:e) "
+                            "ON CONFLICT (engagement_id,subcategory_id,geography_id,year) DO NOTHING"),
+                       {"s": sid, "g": gid, "y": yr, "e": engagement_id})
+            added += 1
+    db.commit()
+    return ScopeEditOut(engagement_id=engagement_id, cells_added=added,
+                        detail=f"Added '{body.name}' with {added} planned cells. Populate or pull to size them.")
+
+
+@router.delete("/{engagement_id}/subcategories/{subcategory_id}", response_model=ScopeEditOut,
+               summary="Remove a subcategory and its cells")
+def remove_subcategory(engagement_id: str, subcategory_id: int, db: DbSession,
+                       _user: CurrentUserDep) -> ScopeEditOut:
+    _require_active(db, engagement_id)
+    n = db.execute(text("SELECT COUNT(*) FROM cells WHERE engagement_id=:e AND subcategory_id=:s"),
+                   {"e": engagement_id, "s": subcategory_id}).scalar_one()
+    # Remove dependent triangulation/player rows, then cells, then the subcategory.
+    db.execute(text("DELETE FROM cell_triangulation WHERE engagement_id=:e AND cell_id IN "
+                    "(SELECT cell_id FROM cells WHERE engagement_id=:e AND subcategory_id=:s)"),
+               {"e": engagement_id, "s": subcategory_id})
+    db.execute(text("DELETE FROM player_shares WHERE engagement_id=:e AND cell_id IN "
+                    "(SELECT cell_id FROM cells WHERE engagement_id=:e AND subcategory_id=:s)"),
+               {"e": engagement_id, "s": subcategory_id})
+    db.execute(text("DELETE FROM cells WHERE engagement_id=:e AND subcategory_id=:s"),
+               {"e": engagement_id, "s": subcategory_id})
+    db.execute(text("DELETE FROM taxonomy_subcategories WHERE engagement_id=:e AND subcategory_id=:s"),
+               {"e": engagement_id, "s": subcategory_id})
+    db.commit()
+    return ScopeEditOut(engagement_id=engagement_id, cells_removed=int(n),
+                        detail=f"Removed the subcategory and {n} cell(s).")
+
+
+@router.post("/{engagement_id}/geographies", response_model=ScopeEditOut,
+             summary="Add a geography (creates its cells across all subcategories × years)")
+def add_geography(engagement_id: str, body: AddGeographyIn, db: DbSession,
+                  _user: CurrentUserDep) -> ScopeEditOut:
+    _require_active(db, engagement_id)
+    gid = _next(db, "geographies", "geography_id")
+    db.execute(text("INSERT INTO geographies (geography_id,country,segment,engagement_id) "
+                    "VALUES (:g,:c,:s,:e) ON CONFLICT DO NOTHING"),
+               {"g": gid, "c": body.country, "s": body.segment, "e": engagement_id})
+    subs = [r[0] for r in db.execute(
+        text("SELECT subcategory_id FROM taxonomy_subcategories WHERE engagement_id=:e"),
+        {"e": engagement_id})]
+    years = _years(db, engagement_id)
+    added = 0
+    for sid in subs:
+        for yr in years:
+            db.execute(text("INSERT INTO cells (subcategory_id,geography_id,year,status,engagement_id) "
+                            "VALUES (:s,:g,:y,'planned',:e) "
+                            "ON CONFLICT (engagement_id,subcategory_id,geography_id,year) DO NOTHING"),
+                       {"s": sid, "g": gid, "y": yr, "e": engagement_id})
+            added += 1
+    db.commit()
+    return ScopeEditOut(engagement_id=engagement_id, cells_added=added,
+                        detail=f"Added '{body.country}' with {added} planned cells.")
+
+
+@router.delete("/{engagement_id}/geographies/{geography_id}", response_model=ScopeEditOut,
+               summary="Remove a geography and its cells")
+def remove_geography(engagement_id: str, geography_id: int, db: DbSession,
+                     _user: CurrentUserDep) -> ScopeEditOut:
+    _require_active(db, engagement_id)
+    n = db.execute(text("SELECT COUNT(*) FROM cells WHERE engagement_id=:e AND geography_id=:g"),
+                   {"e": engagement_id, "g": geography_id}).scalar_one()
+    db.execute(text("DELETE FROM cell_triangulation WHERE engagement_id=:e AND cell_id IN "
+                    "(SELECT cell_id FROM cells WHERE engagement_id=:e AND geography_id=:g)"),
+               {"e": engagement_id, "g": geography_id})
+    db.execute(text("DELETE FROM player_shares WHERE engagement_id=:e AND cell_id IN "
+                    "(SELECT cell_id FROM cells WHERE engagement_id=:e AND geography_id=:g)"),
+               {"e": engagement_id, "g": geography_id})
+    db.execute(text("DELETE FROM cells WHERE engagement_id=:e AND geography_id=:g"),
+               {"e": engagement_id, "g": geography_id})
+    db.execute(text("DELETE FROM geographies WHERE engagement_id=:e AND geography_id=:g"),
+               {"e": engagement_id, "g": geography_id})
+    db.commit()
+    return ScopeEditOut(engagement_id=engagement_id, cells_removed=int(n),
+                        detail=f"Removed the geography and {n} cell(s).")
+
+
+def _require_active(db, engagement_id: str) -> None:
+    ok = db.execute(text("SELECT 1 FROM engagements WHERE engagement_id=:e AND status='active'"),
+                    {"e": engagement_id}).first()
+    if ok is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Engagement not found or archived.")

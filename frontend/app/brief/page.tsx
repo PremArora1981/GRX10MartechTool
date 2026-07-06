@@ -680,10 +680,24 @@ export default function BriefPage() {
       setShowCreateForm(false);
       setCreateResult(null);
       setCreateError(null);
-      // Prefill an engagement name from the interpreted scope.
-      const famPart = data.families.length > 0 ? data.families.join(", ") : "All families";
-      const geoPart = data.geographies.length > 0 ? ` — ${data.geographies.join(", ")}` : "";
-      setEngagementName(`${famPart}${geoPart} (${data.years.from}–${data.years.to})`);
+      // Prefill an engagement name from the interpreted scope. For a new vertical
+      // (no catalog families) derive the subject from the brief itself instead of
+      // a generic "All families".
+      let subject: string;
+      if (data.families.length > 0) {
+        subject = data.families.join(", ");
+      } else {
+        const derived = briefText
+          .replace(
+            /\b(market|markets|report|reports|analysis|study|sizing|research|overview|for|in|across|of|within|throughout)\b.*/i,
+            "",
+          )
+          .replace(/[,–—-].*$/, "")
+          .trim();
+        subject = derived || "New engagement";
+      }
+      const geoPart = data.geographies.length > 0 ? ` — ${data.geographies.slice(0, 3).join(", ")}` : "";
+      setEngagementName(`${subject}${geoPart} (${data.years.from}–${data.years.to})`);
     } catch (err) {
       const msg =
         err instanceof ApiError

@@ -562,6 +562,46 @@ export const api = {
       `/engagements/${encodeURIComponent(engagementId)}/populate`,
       { method: "POST" },
     ),
+
+  // ── Cell guided actions (suggest sources / add source) ─────────────────────
+  suggestCellSources: (cellId: number) =>
+    apiRequest<{
+      cell_id: number; subcategory: string; country: string; year: number;
+      diagnosis: string; existing_sources: string[];
+      suggestions: Array<{
+        publisher: string; source_class: string; raw_table: string;
+        base_url: string; endpoint_path: string; auth_type: string; why: string;
+      }>;
+    }>(`/cells/${cellId}/suggest-sources`, { method: "POST" }),
+
+  addSuggestedSource: (
+    cellId: number,
+    body: { publisher: string; source_class: string; raw_table: string; base_url: string; endpoint_path: string; auth_type: string },
+  ) =>
+    apiRequest<{ source_id: string; detail: string }>(
+      `/cells/${cellId}/add-suggested-source`, { method: "POST", json: body },
+    ),
+
+  // ── Scope editing (add/remove subcategories + geographies) ─────────────────
+  addSubcategory: (
+    engagementId: string,
+    body: { family: string; name: string; hs_codes?: string[]; regulatory_codes?: string[] },
+  ) =>
+    apiRequest<{ engagement_id: string; cells_added: number; cells_removed: number; detail: string }>(
+      `/engagements/${encodeURIComponent(engagementId)}/subcategories`, { method: "POST", json: body },
+    ),
+  removeSubcategory: (engagementId: string, subcategoryId: number) =>
+    apiRequest<{ engagement_id: string; cells_added: number; cells_removed: number; detail: string }>(
+      `/engagements/${encodeURIComponent(engagementId)}/subcategories/${subcategoryId}`, { method: "DELETE" },
+    ),
+  addGeography: (engagementId: string, body: { country: string; segment?: string }) =>
+    apiRequest<{ engagement_id: string; cells_added: number; cells_removed: number; detail: string }>(
+      `/engagements/${encodeURIComponent(engagementId)}/geographies`, { method: "POST", json: body },
+    ),
+  removeGeography: (engagementId: string, geographyId: number) =>
+    apiRequest<{ engagement_id: string; cells_added: number; cells_removed: number; detail: string }>(
+      `/engagements/${encodeURIComponent(engagementId)}/geographies/${geographyId}`, { method: "DELETE" },
+    ),
 } as const;
 
 // ── Report / export types (shared between api.ts and the reports screen) ───

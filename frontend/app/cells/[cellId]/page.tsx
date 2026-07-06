@@ -30,6 +30,7 @@ import {
   TamBand,
 } from "@/components";
 import { EstimatesPanel } from "./EstimatesPanel";
+import { SuggestSourcesPanel } from "./SuggestSourcesPanel";
 
 // ---------------------------------------------------------------------------
 // Type helpers
@@ -180,8 +181,23 @@ export default async function CellDetailPage({ params }: Props) {
           Estimates accordion table (client component — interactive)
           Click 1: row → source panel
           Click 2: source panel → raw payload
+
+          AI source suggestions (client component — LLM-backed):
+          especially valuable for Unsized / LOW cells. When the cell has no
+          estimates we lead with it (above the empty table); otherwise it sits
+          below as a way to strengthen the triangulation.
           ================================================================ */}
-      <EstimatesPanel triangulations={triangulations} cellId={cellId} />
+      {triangulations.length === 0 ? (
+        <>
+          <SuggestSourcesPanel cellId={cellId} hasEstimates={false} />
+          <EstimatesPanel triangulations={triangulations} cellId={cellId} />
+        </>
+      ) : (
+        <>
+          <EstimatesPanel triangulations={triangulations} cellId={cellId} />
+          <SuggestSourcesPanel cellId={cellId} hasEstimates />
+        </>
+      )}
     </div>
   );
 }
