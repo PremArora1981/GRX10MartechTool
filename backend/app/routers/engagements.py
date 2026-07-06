@@ -24,7 +24,7 @@ from sqlalchemy import text
 
 from backend.app.deps import CurrentUserDep, DbSession, EngagementDep, DEFAULT_ENGAGEMENT_ID
 from backend.app.schemas import EngagementCreate, EngagementOut
-from backend.app.services import engagement_materialize, seed_job
+from backend.app.services import engagement_materialize, seed_job, players_job
 
 logger = logging.getLogger("grx10.routers.engagements")
 
@@ -233,6 +233,106 @@ def populate_engagement(
         planned_cells=int(n_planned),
         detail=result["detail"],
     )
+
+
+class EngagementStatus(BaseModel):
+    engagement_id: str
+    cells_total: int
+    cells_sized: int
+    cells_planned: int
+    players: int
+    seeding: bool
+
+
+@router.get("/{engagement_id}/status", response_model=EngagementStatus,
+            summary="Live counts for progress (sized/total cells, players)")
+def engagement_status(engagement_id: str, db: DbSession, _user: CurrentUserDep) -> EngagementStatus:
+    r = db.execute(
+        text(
+            "SELECT "
+            " (SELECT COUNT(*) FROM cells WHERE engagement_id=:e) total, "
+            " (SELECT COUNT(*) FROM cells WHERE engagement_id=:e AND status='active') sized, "
+            " (SELECT COUNT(*) FROM cells WHERE engagement_id=:e AND status='planned') planned, "
+            " (SELECT COUNT(*) FROM player_shares WHERE engagement_id=:e) players"
+        ),
+        {"e": engagement_id},
+    ).mappings().first()
+    if r is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Engagement not found.")
+    return EngagementStatus(
+        engagement_id=engagement_id, cells_total=r["total"], cells_sized=r["sized"],
+        cells_planned=r["planned"], players=r["players"], seeding=r["planned"] > 0,
+    )
+
+
+class RenameIn(BaseModel):
+    name: str
+
+
+@router.patch("/{engagement_id}", response_model=EngagementOut, summary="Rename an engagement")
+def rename_engagement(engagement_id: str, body: RenameIn, db: DbSession,
+                      _user: CurrentUserDep) -> EngagementOut:
+    if not body.name.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Name required.")
+    n = db.execute(text("UPDATE engagements SET name=:n WHERE engagement_id=:e"),
+                   {"n": body.name.strip(), "e": engagement_id}).rowcount
+    if not n:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Engagement not found.")
+    db.commit()
+    row = db.execute(
+        text("SELECT engagement_id, name, is_demo, status, active_profile, "
+             "web_search_enabled, brief_text, created_at FROM engagements WHERE engagement_id=:e"),
+        {"e": engagement_id}).first()
+    return _engagement_out(row)
+
+
+# FK-safe delete order for a full engagement teardown.
+_DELETE_ORDER = [
+    "player_shares", "supplier_relationships", "facilities", "cell_triangulation",
+    "catalysts", "recommendations", "commentary", "cell_assumption_link", "assumptions",
+    "raw_trade_flows", "raw_regulatory", "raw_filings", "raw_transcripts", "raw_shipments",
+    "raw_external_metrics", "raw_industry_reports", "raw_patents", "raw_procurement",
+    "raw_standards", "raw_news", "raw_signals",
+    "cells", "connector_credentials", "sources", "companies",
+    "taxonomy_subcategories", "taxonomy_families", "geographies",
+]
+
+
+@router.delete("/{engagement_id}", summary="Hard-delete a non-demo engagement + all its data")
+def delete_engagement(engagement_id: str, db: DbSession, _user: CurrentUserDep,
+                      response: Response) -> dict:
+    row = db.execute(text("SELECT is_demo FROM engagements WHERE engagement_id=:e"),
+                     {"e": engagement_id}).first()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Engagement not found.")
+    if row.is_demo:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            detail="The demo engagement is protected and cannot be deleted.")
+    for tbl in _DELETE_ORDER:
+        try:
+            db.execute(text(f"DELETE FROM {tbl} WHERE engagement_id = :e"), {"e": engagement_id})
+        except Exception as exc:  # noqa: BLE001 — connector_credentials may lack engagement_id
+            logger.debug("delete from %s skipped: %s", tbl, exc)
+            db.rollback()
+    db.execute(text("DELETE FROM engagements WHERE engagement_id=:e"), {"e": engagement_id})
+    db.commit()
+    response.set_cookie(_COOKIE, DEFAULT_ENGAGEMENT_ID, max_age=_COOKIE_MAX_AGE,
+                        samesite="lax", path="/")
+    return {"deleted": engagement_id}
+
+
+@router.post("/{engagement_id}/populate-players", response_model=PopulateResult,
+             summary="Discover top players/competitors per segment (AI + web search)")
+def populate_players(engagement_id: str, db: DbSession, _user: CurrentUserDep,
+                     background: BackgroundTasks) -> PopulateResult:
+    if db.execute(text("SELECT 1 FROM engagements WHERE engagement_id=:e AND status='active'"),
+                  {"e": engagement_id}).first() is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Engagement not found or archived.")
+    n_cells = db.execute(text("SELECT COUNT(*) FROM cells WHERE engagement_id=:e"),
+                         {"e": engagement_id}).scalar_one()
+    res = players_job.launch_players(engagement_id, background=background)
+    return PopulateResult(engagement_id=engagement_id, launched=res["launched"],
+                          mode=res["mode"], planned_cells=int(n_cells), detail=res["detail"])
 
 
 # ─── Scope editing: add/remove subcategories + geographies (rebuilds cells) ────

@@ -602,6 +602,23 @@ export const api = {
     apiRequest<{ engagement_id: string; cells_added: number; cells_removed: number; detail: string }>(
       `/engagements/${encodeURIComponent(engagementId)}/geographies/${geographyId}`, { method: "DELETE" },
     ),
+
+  // ── Players discovery + status + rename/delete ─────────────────────────────
+  populatePlayers: (engagementId: string) =>
+    apiRequest<EngagementPopulateResult>(
+      `/engagements/${encodeURIComponent(engagementId)}/populate-players`, { method: "POST" },
+    ),
+  engagementStatus: (engagementId: string) =>
+    apiRequest<{
+      engagement_id: string; cells_total: number; cells_sized: number;
+      cells_planned: number; players: number; seeding: boolean;
+    }>(`/engagements/${encodeURIComponent(engagementId)}/status`, { cache: "no-store" }),
+  renameEngagement: (engagementId: string, name: string) =>
+    apiRequest<Engagement>(`/engagements/${encodeURIComponent(engagementId)}`,
+      { method: "PATCH", json: { name } }),
+  deleteEngagement: (engagementId: string) =>
+    apiRequest<{ deleted: string }>(`/engagements/${encodeURIComponent(engagementId)}`,
+      { method: "DELETE" }),
 } as const;
 
 // ── Report / export types (shared between api.ts and the reports screen) ───

@@ -16,6 +16,7 @@ import type { Metadata } from "next";
 import { api } from "@/lib/api";
 import { PageHeader } from "@/components";
 import { CellSelector } from "./_components/CellSelector";
+import { DiscoverPlayersButton } from "./_components/DiscoverPlayersButton";
 import { PlayersView } from "./_components/PlayersView";
 import type { CellView, PlayerShare, SupplierRelationship } from "@/lib/types";
 
@@ -76,7 +77,12 @@ export default async function PlayersPage({ searchParams }: PageProps) {
 
       {hasCellId && fetchError && <PlayersErrorBanner message={fetchError} />}
 
-      {hasCellId && !fetchError && cell && (
+      {/* Cell selected but no player shares yet (new vertical) — offer AI discovery. */}
+      {hasCellId && !fetchError && cell && shares.length === 0 && (
+        <NoPlayersState />
+      )}
+
+      {hasCellId && !fetchError && cell && shares.length > 0 && (
         <PlayersView
           cell={cell}
           shares={shares}
@@ -119,10 +125,52 @@ function PlayersEmptyState() {
           <path d="M22 21a6 6 0 00-9-5.2" />
         </svg>
         <h2 className="mb-1 text-sm font-semibold text-ink">No cell selected</h2>
-        <p className="text-sm text-ink-muted">
+        <p className="mb-4 text-sm text-ink-muted">
           Choose a market cell from the dropdown above to view ranked player
           shares and supplier relationships.
         </p>
+        <p className="mb-3 text-sm text-ink-muted">
+          New vertical with no players yet? Kick off AI discovery to populate
+          top players per segment.
+        </p>
+        <div className="flex justify-center">
+          <DiscoverPlayersButton prominent />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NoPlayersState() {
+  return (
+    <div className="card px-6 py-10">
+      <div className="mx-auto max-w-md text-center">
+        {/* People icon — mirrors the empty-state glyph. */}
+        <svg
+          className="mx-auto mb-4 h-10 w-10 text-ink-subtle"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M16 11a4 4 0 10-8 0" />
+          <path d="M2 21a8 8 0 0120 0" />
+          <path d="M20 8a3 3 0 11-6 0" />
+          <path d="M22 21a6 6 0 00-9-5.2" />
+        </svg>
+        <h2 className="mb-1 text-sm font-semibold text-ink">
+          No players discovered yet
+        </h2>
+        <p className="mb-5 text-sm text-ink-muted">
+          This cell has no player shares yet. Run AI discovery to find the top
+          players per segment for this engagement.
+        </p>
+        <div className="flex justify-center">
+          <DiscoverPlayersButton prominent />
+        </div>
       </div>
     </div>
   );

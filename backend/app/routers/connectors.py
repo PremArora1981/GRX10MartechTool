@@ -1836,10 +1836,13 @@ def pull_connector(
 
 # Method + gross-up assumptions for turning landed rows into cell estimates.
 _IMPORT_GROSS_UP = 1.0 / 0.55  # apparent market ≈ imports / import-share
+_FILINGS_SHARE = 0.30          # disclosed segment revenue ≈ 30% of the market
 _RESIZE_METHOD = {
     "raw_trade_flows": "comtrade_hs4_import",
     "raw_industry_reports": "top_down_industry_allocation",
     "raw_regulatory": "regulatory_count_unit_price",
+    "raw_filings": "filings_segment_extraction",
+    "raw_external_metrics": "activity_volume_unit_price",
 }
 
 
@@ -1897,6 +1900,51 @@ def _resize_after_pull(db: Session, engagement_id: str, source_id: str,
             ).scalar()
             if val:
                 est = float(val) / 1e6
+        elif raw_table == "raw_filings":
+            # Disclosed segment revenue for this subcategory × geography, grossed up.
+            val = db.execute(
+                text(
+                    "SELECT COALESCE(SUM(revenue_usd),0) FROM raw_filings "
+                    "WHERE source_id=:sid AND engagement_id=:e "
+                    "  AND (geography = :country OR geography IS NULL) "
+                    "  AND (segment ILIKE :sub) AND revenue_usd IS NOT NULL"
+                ),
+                {"sid": source_id, "e": engagement_id, "country": c["country"],
+                 "sub": f"%{c['subcat']}%"},
+            ).scalar_one()
+            if val and float(val) > 0:
+                est = float(val) / 1e6 / _FILINGS_SHARE
+        elif raw_table == "raw_regulatory":
+            # Active registrations × implied revenue per registration (if disclosed).
+            val = db.execute(
+                text(
+                    "SELECT (raw_json->'result'->>'active_registrations')::numeric * "
+                    "       (raw_json->'result'->>'implied_revenue_per_registration_usd')::numeric "
+                    "FROM raw_regulatory WHERE source_id=:sid AND engagement_id=:e "
+                    "  AND country=:country "
+                    "  AND raw_json->'query'->>'product_category' ILIKE :sub "
+                    "  AND raw_json->'result' ? 'implied_revenue_per_registration_usd' "
+                    "ORDER BY accessed_at DESC LIMIT 1"
+                ),
+                {"sid": source_id, "e": engagement_id, "country": c["country"],
+                 "sub": f"%{c['subcat']}%"},
+            ).scalar()
+            if val and float(val) > 0:
+                est = float(val) / 1e6
+        elif raw_table == "raw_external_metrics":
+            # A directly-reported market-size indicator (unit contains 'USD'/'market').
+            val = db.execute(
+                text(
+                    "SELECT value FROM raw_external_metrics "
+                    "WHERE source_id=:sid AND engagement_id=:e AND country=:country "
+                    "  AND (indicator ILIKE :sub OR unit ILIKE '%market%') AND value IS NOT NULL "
+                    "ORDER BY accessed_at DESC LIMIT 1"
+                ),
+                {"sid": source_id, "e": engagement_id, "country": c["country"],
+                 "sub": f"%{c['subcat']}%"},
+            ).scalar()
+            if val and float(val) > 0:
+                est = float(val) / 1e6 if float(val) > 1e5 else float(val)
         if est is None or est <= 0:
             continue
         db.execute(

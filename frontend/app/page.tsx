@@ -5,6 +5,7 @@ import { formatUsdMillions } from "@/lib/format";
 import type { StatsOverview } from "@/lib/api";
 import type { Engagement } from "@/lib/types";
 import DashboardCharts from "./_components/DashboardCharts";
+import SeedingProgress from "./_components/SeedingProgress";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +53,9 @@ export default async function DashboardPage() {
             : "No sized cells yet for this engagement — run the pipeline or web-search populate to fill the model."
         }
       />
+
+      {/* Background seeding progress — self-hides when no cells are planned. */}
+      <SeedingProgress />
 
       {apiError && (
         <div className="card mb-6 border-health-auth/40 bg-health-auth-bg p-4 text-sm text-ink-muted">
