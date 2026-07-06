@@ -20,6 +20,7 @@ If ``ANTHROPIC_API_KEY`` is absent the seed is a no-op with a clear detail
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -34,8 +35,10 @@ from backend.app.db import get_session
 
 logger = logging.getLogger("grx10.services.seed_job")
 
-# Bound the in-process local seed so a dev box isn't hammered by agentic searches.
-LOCAL_SEED_CAP = 24
+# Bound the in-process seed so a box isn't hammered by agentic searches, and run
+# them concurrently so a full engagement seeds in minutes, not an hour.
+LOCAL_SEED_CAP = 200
+SEED_WORKERS = 8
 _MODEL = "claude-sonnet-4-6"
 _SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
 _RENDER_PIPELINE_SERVICE = os.environ.get("RENDER_PIPELINE_SERVICE_ID", "")
@@ -85,11 +88,16 @@ def _launch_render_job(engagement_id: str, render_key: str) -> None:
 # ─── the seed itself ──────────────────────────────────────────────────────────
 
 def run_seed(engagement_id: str, cap: int) -> dict[str, Any]:
-    """Web-search-size up to *cap* planned cells for the engagement, in-process."""
+    """Web-search-size up to *cap* planned cells for the engagement.
+
+    Runs the per-cell agentic searches CONCURRENTLY (bounded pool) so a 60-cell
+    engagement seeds in a few minutes instead of ~an hour serial. Only ``planned``
+    cells are touched, so the job is idempotent + RESUMABLE — re-running it (e.g.
+    after a dyno restart killed a prior run) simply continues the remaining cells.
+    """
     session = next(get_session())
-    sized = 0
     try:
-        cells = session.execute(
+        cells = [dict(r) for r in session.execute(
             text(
                 "SELECT c.cell_id, sc.name AS subcat, g.country, c.year "
                 "FROM cells c "
@@ -99,31 +107,67 @@ def run_seed(engagement_id: str, cap: int) -> dict[str, Any]:
                 "ORDER BY c.year, c.cell_id LIMIT :cap"
             ),
             {"e": engagement_id, "cap": cap},
-        ).mappings().all()
+        ).mappings().all()]
+    finally:
+        session.close()
 
-        ws_source = f"{engagement_id}__web_search"
-        for c in cells:
+    ws_source = f"{engagement_id}__web_search"
+    total = len(cells)
+    sized = 0
+    logger.info("seed starting for %s: %d planned cells, %d workers",
+                engagement_id, total, SEED_WORKERS)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=SEED_WORKERS) as pool:
+        futures = {
+            pool.submit(_seed_one_cell, engagement_id, ws_source, c): c
+            for c in cells
+        }
+        done = 0
+        for fut in concurrent.futures.as_completed(futures):
+            done += 1
             try:
-                usd_m, url, snippet = _size_cell_via_websearch(c["subcat"], c["country"], c["year"])
-            except Exception as exc:  # noqa: BLE001 — one cell failing must not stop the seed
-                logger.warning("cell %s web-search failed: %s", c["cell_id"], exc)
-                continue
-            if usd_m is None:
-                continue
-            _write_cell_estimate(session, engagement_id, ws_source, c["cell_id"], usd_m, url, snippet)
-            sized += 1
-            session.commit()
+                if fut.result():
+                    sized += 1
+            except Exception as exc:  # noqa: BLE001 — one cell never stops the batch
+                logger.warning("seed cell failed: %s", exc)
+            if done % 10 == 0 or done == total:
+                logger.info("seed progress %s: %d/%d done, %d sized",
+                            engagement_id, done, total, sized)
 
-        # Refresh the confidence view so the new cells score.
+    # Refresh the confidence view once, after the batch.
+    try:
+        refresh_session = next(get_session())
         try:
-            with session.connection().engine.connect() as raw:
+            with refresh_session.connection().engine.connect() as raw:
                 raw.execution_options(isolation_level="AUTOCOMMIT").execute(
                     text("REFRESH MATERIALIZED VIEW cell_triangulation_summary"))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("matview refresh after seed failed: %s", exc)
+        finally:
+            refresh_session.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("matview refresh after seed failed: %s", exc)
 
-        logger.info("seed complete for %s: %d cells sized", engagement_id, sized)
-        return {"engagement_id": engagement_id, "sized": sized}
+    logger.info("seed complete for %s: %d/%d cells sized", engagement_id, sized, total)
+    return {"engagement_id": engagement_id, "sized": sized, "total": total}
+
+
+def _seed_one_cell(engagement_id: str, ws_source: str, c: dict) -> bool:
+    """Size one planned cell via web search, in its own DB session (thread-safe)."""
+    try:
+        usd_m, url, snippet = _size_cell_via_websearch(c["subcat"], c["country"], c["year"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cell %s web-search failed: %s", c["cell_id"], exc)
+        return False
+    if usd_m is None:
+        return False
+    session = next(get_session())
+    try:
+        _write_cell_estimate(session, engagement_id, ws_source, c["cell_id"], usd_m, url, snippet)
+        session.commit()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        logger.warning("cell %s write failed: %s", c["cell_id"], exc)
+        return False
     finally:
         session.close()
 

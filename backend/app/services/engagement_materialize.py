@@ -33,6 +33,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from backend.app.services import credential_service
+
 logger = logging.getLogger("grx10.services.engagement_materialize")
 
 MAX_CELLS = 120           # hard ceiling on the materialized grid (cost guardrail)
@@ -248,6 +250,17 @@ def materialize_engagement(
             },
         )
         source_count += 1
+
+        # Securely store an inline API key (envelope-encrypted; never in plaintext
+        # on the source row). The user can enter it right on the brief plan.
+        api_key = (c.get("api_key") or "").strip()
+        if api_key:
+            try:
+                credential_service.store(
+                    session, source_id=sid, secret=api_key, actor="brief-create"
+                )
+            except Exception as exc:  # noqa: BLE001 — creds are best-effort at create
+                logger.warning("could not store credential for %s: %s", sid, exc)
 
     # Always ensure a web-search source exists (LOW-capped fallback that seeds cells).
     ws_sid = f"{engagement_id}__web_search"

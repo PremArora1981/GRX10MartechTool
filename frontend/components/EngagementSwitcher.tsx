@@ -182,7 +182,6 @@ export function EngagementSwitcher() {
           </div>
           <div className="flex items-center gap-2">
             <span className="truncate font-medium">{active.name}</span>
-            {active.is_demo ? <DemoChip /> : null}
           </div>
         </div>
         {chevron}
@@ -214,7 +213,6 @@ export function EngagementSwitcher() {
                     {isActive ? check : null}
                   </span>
                   <span className="truncate">{engagement.name}</span>
-                  {engagement.is_demo ? <DemoChip /> : null}
                   <span className="ml-auto flex items-center">
                     {!engagement.is_demo ? (
                       <span
