@@ -15,6 +15,7 @@ the env var set at deploy time.
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 from datetime import date, datetime, timezone
@@ -99,14 +100,17 @@ def build_and_send(hours: int = 24) -> bool:
     geo = _geolocate([r["ip"] for r in rows])
     tr = []
     for r in rows:
-        loc = geo.get(r["ip"], "—")
+        # All of ip / location / paths derive from untrusted request data (or an
+        # external geo API), so escape before embedding in the HTML email.
+        ip = html.escape(r["ip"] or "—")
+        loc = html.escape(geo.get(r["ip"], "—"))
         fs = r["first_seen"].strftime("%H:%M") if r["first_seen"] else ""
         ls = r["last_seen"].strftime("%H:%M") if r["last_seen"] else ""
-        paths = ", ".join(r["paths"] or [])[:120]
+        paths = html.escape(", ".join(r["paths"] or [])[:120])
         tr.append(
-            f"<tr><td style='padding:4px 10px'>{r['ip']}</td>"
+            f"<tr><td style='padding:4px 10px'>{ip}</td>"
             f"<td style='padding:4px 10px'>{loc}</td>"
-            f"<td style='padding:4px 10px;text-align:right'>{r['hits']}</td>"
+            f"<td style='padding:4px 10px;text-align:right'>{int(r['hits'])}</td>"
             f"<td style='padding:4px 10px'>{fs}–{ls} UTC</td>"
             f"<td style='padding:4px 10px;color:#666;font-size:12px'>{paths}</td></tr>"
         )

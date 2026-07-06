@@ -24,6 +24,7 @@ Env vars:
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import threading
@@ -108,13 +109,14 @@ def send_html(subject: str, html: str) -> bool:
 
 def _send_email(path: str, ip: str, ua: str, ts: str) -> None:
     window = _debounce_seconds() // 60
+    # path / ip / ua come from the untrusted request — escape for the HTML email.
     body = (
         "<p><strong>Someone is using the GRX10 Market Research app.</strong></p>"
         "<ul>"
-        f"<li>Time: {ts}</li>"
-        f"<li>First request: <code>{path}</code></li>"
-        f"<li>IP: {ip}</li>"
-        f"<li>Browser: {ua[:200]}</li>"
+        f"<li>Time: {html.escape(ts)}</li>"
+        f"<li>First request: <code>{html.escape(path)}</code></li>"
+        f"<li>IP: {html.escape(ip)}</li>"
+        f"<li>Browser: {html.escape(ua[:200])}</li>"
         "</ul>"
         f"<p style='color:#888'>You'll get at most one of these per {window} min of activity. "
         "The app is anonymous, so this fires on any real browser session.</p>"
